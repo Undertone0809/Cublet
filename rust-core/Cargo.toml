@@ -1,0 +1,28 @@
+[package]
+name = "codex-storage-core"
+version = "0.4.1"
+description = "Native Codex storage analysis and safe cleanup core"
+authors = ["Zeeland"]
+edition = "2021"
+
+[lib]
+name = "codex_storage_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "codex-core"
+path = "src/bin/codex-core.rs"
+
+[features]
+default = []
+# Optimized, isolated developer measurements; never enabled for packaging.
+benchmark = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+dirs = "6"
+walkdir = "2.5"
+rusqlite = { version = "0.32", features = ["bundled"] }
+libc = "0.2"

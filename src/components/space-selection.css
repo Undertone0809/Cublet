@@ -1,0 +1,69 @@
+:root {
+  --text-swap-dur: 150ms;
+  --text-swap-translate-y: 4px;
+  --text-swap-blur: 2px;
+  --text-swap-ease: ease-in-out;
+}
+.t-text-swap {
+  display: inline-block;
+  transform: translateY(0);
+  filter: blur(0);
+  opacity: 1;
+  transition:
+    transform var(--text-swap-dur) var(--text-swap-ease),
+    filter    var(--text-swap-dur) var(--text-swap-ease),
+    opacity   var(--text-swap-dur) var(--text-swap-ease);
+  will-change: transform, filter, opacity;
+}
+.t-text-swap.is-exit {
+  transform: translateY(calc(var(--text-swap-translate-y) * -1));
+  filter: blur(var(--text-swap-blur));
+  opacity: 0;
+}
+.t-text-swap.is-enter-start {
+  transform: translateY(var(--text-swap-translate-y));
+  filter: blur(var(--text-swap-blur));
+  opacity: 0;
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-text-swap { transition: none !important; }
+}
+
+.space-selection-viewport { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 25; border-radius: inherit; }
+/* Shared contextual actions for both space views; no page-specific overrides. */
+.space-selection {
+  position: absolute;
+  pointer-events: auto;
+  inset: 8px 8px 8px auto;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 220px;
+  max-width: calc(100% - 16px);
+  min-width: 0;
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+  color: var(--foreground);
+  background: var(--chrome-overlay, var(--popover));
+  border: 1px solid var(--glass-control-edge, var(--border));
+  border-radius: var(--chrome-panel-radius, 14px);
+  box-shadow: var(--chrome-overlay-shadow);
+}
+.selection-heading { display: flex; align-items: flex-start; gap: 8px; }
+.selection-heading h3 { flex: 1; margin: 4px 0 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.space-selection code { color: var(--muted-foreground); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.space-selection dl { margin: 0; }
+.space-selection dl > div { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.space-selection dt, .space-selection > small { color: var(--muted-foreground); }
+.space-selection dd { margin: 0; font-weight: 500; white-space: nowrap; }
+.space-selection dl > .selection-date { flex-direction: column; gap: 4px; }
+.space-selection .selection-date dd { white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.space-selection > small, .selection-feedback { font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.selection-feedback { color: var(--muted-foreground); }
+.space-selection > [data-slot="button"] { flex: none; font-size: 11px; }
+@media (max-width: 700px) { .space-selection { width: 190px; } }

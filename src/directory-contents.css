@@ -1,0 +1,197 @@
+.directory-contents {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--glass-card, var(--card));
+  border: 1px solid var(--glass-separator, var(--border));
+  border-radius: var(--chrome-panel-radius, 14px);
+  font-size: 12px;
+}
+
+.directory-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--glass-separator, var(--border));
+}
+
+.directory-toolbar > span {
+  flex: none;
+  font-weight: 600;
+}
+
+.directory-toolbar > small {
+  min-width: 0;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  font-size: 11px;
+}
+
+.directory-toolbar > div {
+  flex: 1;
+}
+
+.directory-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.directory-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 122px var(--chrome-control-height, 32px);
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--glass-separator, var(--border));
+}
+
+.directory-row > span {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.directory-row:not(.directory-head):is(:hover, :focus-within) {
+  background: var(--glass-selection-hover, var(--muted));
+}
+
+.directory-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 34px;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  background: var(--chrome-table-head, var(--background));
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.directory-head > span:first-child {
+  text-align: left;
+}
+
+.directory-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-block: 6px;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.directory-name:focus-visible {
+  outline: 2px solid var(--chrome-accent, var(--ring));
+  outline-offset: 2px;
+}
+
+.directory-name > svg {
+  flex: none;
+  color: var(--glass-muted-text, var(--muted-foreground));
+}
+
+.directory-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-name:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.directory-measurement {
+  display: block;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.directory-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 4px 12px;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  background: var(--chrome-table-head, var(--background));
+  border-top: 1px solid var(--glass-separator, var(--border));
+  font-size: 11px;
+}
+
+.directory-footer > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.directory-issues {
+  max-height: 100px;
+  overflow: auto;
+  padding: 6px 12px;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  border-top: 1px solid var(--glass-separator, var(--border));
+  font-size: 11px;
+}
+
+.directory-issues p,
+.directory-contents .error-banner {
+  overflow-wrap: anywhere;
+}
+
+/* Selecting a tile must not move it before the second click of a double click. */
+.utility-shell .space-map-layout.has-selection {
+  position: relative;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.mova-dialog .grouped-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+
+.grouped-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grouped-item > b {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+[data-slot="dialog-content"].treemap-directory-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, calc(100vw - 32px));
+  max-width: none;
+  height: min(560px, calc(100dvh - 40px));
+  overflow: hidden;
+}
+
+@media (max-width: 750px) {
+  .directory-toolbar > small {
+    display: none;
+  }
+
+  .directory-row {
+    grid-template-columns: minmax(0, 1fr) 108px var(--chrome-control-height, 32px);
+    gap: 5px;
+  }
+}

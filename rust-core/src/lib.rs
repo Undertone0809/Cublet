@@ -1,0 +1,12 @@
+pub mod agent_activity;
+pub mod agent_cleanup;
+pub mod agent_scan;
+mod application_disposal;
+mod application_mcp;
+mod cleanup_disposition;
+pub mod macdisk;
+pub mod mcp;
+pub mod processes;
+pub mod rpc;
+pub mod scanner;
+pub mod worktrees;

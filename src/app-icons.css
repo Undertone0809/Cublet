@@ -1,0 +1,16 @@
+.app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  color: var(--muted-foreground);
+}
+
+.app-icon > img {
+  display: block;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}

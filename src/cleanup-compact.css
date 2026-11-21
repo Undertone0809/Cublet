@@ -1,0 +1,44 @@
+.utility-shell .cleanup-surface {
+  overflow: hidden;
+  background: var(--glass-card);
+  border: 1px solid var(--glass-edge);
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 6px 21px var(--glass-shadow);
+}
+
+.cleanup-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 112px;
+  margin: 0;
+  padding: 20px 16px;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  font-size: 12px;
+  text-align: center;
+}
+
+.cleanup-row-actions,
+.operation-row > .cleanup-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.cleanup-disclosure {
+  color: var(--glass-muted-text, var(--muted-foreground));
+  font-size: 12px;
+}
+.cleanup-disclosure summary {
+  width: fit-content;
+  cursor: pointer;
+}
+.cleanup-disclosure p {
+  max-width: 80ch;
+  margin: 8px 0 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}

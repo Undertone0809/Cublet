@@ -1,0 +1,61 @@
+[data-slot="dialog-content"].permission-dialog {
+  max-width: 520px;
+  gap: 14px;
+}
+
+.permission-body {
+  padding-inline: 2px;
+}
+
+.permission-current-state {
+  margin: 0 0 14px;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  font-size: 12px;
+}
+
+.permission-dialog .permission-steps {
+  gap: 12px;
+}
+
+.permission-dialog .permission-steps > li {
+  gap: 10px;
+}
+
+.permission-dialog .permission-steps > li > span {
+  width: 23px;
+  height: 23px;
+  color: var(--chrome-accent, var(--foreground));
+  background: var(--chrome-selected, var(--muted));
+  border-radius: 6px;
+}
+
+.permission-dialog .permission-steps strong {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.permission-dialog .permission-steps p {
+  margin: 4px 0 0;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.permission-dialog .permission-open-actions {
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.permission-dialog .permission-status {
+  margin-top: 8px;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.permission-dialog .error-banner {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 12px;
+}

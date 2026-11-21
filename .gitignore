@@ -1,0 +1,25 @@
+node_modules
+dist
+rust-core/target
+.DS_Store
+outputs/install-backup-*/
+electron-dist
+
+/work/
+
+# Local builds, acceptance evidence, and signing inputs
+/outputs/
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.log
+__pycache__/
+*.pyc
+
+/.codex-attachments/
+
+/.build/
+
+/electron-runtime/

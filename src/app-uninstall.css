@@ -1,0 +1,244 @@
+.app-uninstall-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 7px;
+  padding: 0 1px;
+}
+
+.application-notices {
+  flex: none;
+  padding: 8px 10px;
+  border: 1px solid var(--glass-separator);
+  border-radius: var(--chrome-control-radius);
+  color: var(--glass-muted-text);
+  font-size: 12px;
+}
+
+.application-notices > div { display: flex; align-items: center; gap: 8px; }
+.application-notices > div > span { flex: 1; overflow-wrap: anywhere; }
+.application-notices p { margin: 3px 0; }
+.application-version { margin-inline-start: 7px; color: var(--glass-muted-text); font-size: 11px; font-weight: 400; }
+.apps-table .disk-name small { white-space: normal; overflow-wrap: anywhere; }
+
+.app-uninstall-selection {
+  flex: 1;
+  min-width: 0;
+  padding-inline-start: 3px;
+  color: var(--glass-muted-text);
+  font-size: 12px;
+}
+
+.utility-shell .apps-table :is(.disk-table-head, .disk-table-row) {
+  grid-template-columns: 22px minmax(0, 1fr) minmax(60px, 9%) minmax(58px, 9%) minmax(53px, 9%) minmax(82px, 12%) var(--chrome-control-height);
+  gap: 10px;
+}
+
+.apps-table .disk-table-head > :nth-child(2) {
+  text-align: left;
+}
+
+.utility-shell .apps-table .disk-table-row[data-uninstall-selected] {
+  background: var(--glass-selection);
+}
+
+.app-uninstall-checkbox-cell,
+.app-uninstall-item-control {
+  display: grid;
+  place-items: center;
+}
+
+.app-uninstall-stale {
+  color: var(--mova-warning);
+  white-space: nowrap;
+}
+
+[data-slot="dialog-content"].app-uninstall-dialog {
+  width: min(650px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100% - 32px);
+  gap: 14px;
+}
+
+.app-uninstall-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 1px 1px 3px;
+}
+
+.app-uninstall-group {
+  flex: none;
+  border: 1px solid var(--glass-separator);
+  border-radius: var(--chrome-control-radius);
+  overflow: clip;
+}
+
+.app-uninstall-group h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 7px 10px;
+  background: var(--chrome-table-head);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.app-uninstall-group h3 :is(svg, span, small) {
+  color: var(--glass-muted-text);
+}
+
+.app-uninstall-group h3 span,
+.app-uninstall-group h3 small {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.app-uninstall-group h3 small {
+  margin-inline-start: auto;
+}
+
+.app-uninstall-dialog ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.app-uninstall-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--glass-separator);
+}
+
+.app-uninstall-item-detail {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.app-uninstall-item-detail strong {
+  font-weight: 600;
+}
+
+.app-uninstall-dialog code {
+  color: var(--glass-muted-text);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.app-uninstall-item-detail small {
+  color: var(--glass-muted-text);
+  font-size: 11px;
+}
+
+.app-uninstall-owner {
+  display: inline-block;
+  margin-inline-start: 7px;
+  color: var(--glass-muted-text);
+  font-size: 11px;
+}
+
+.app-uninstall-size {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.app-uninstall-status,
+.app-uninstall-warnings li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  color: var(--glass-muted-text);
+  font-size: 12px;
+}
+
+.app-uninstall-status svg,
+.app-uninstall-warnings svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.app-uninstall-status p {
+  margin: 3px 0 0;
+}
+
+.app-uninstall-copy-path {
+  overflow-wrap: anywhere;
+}
+
+.app-uninstall-status strong {
+  color: var(--foreground);
+}
+
+.app-uninstall-error,
+.app-uninstall-failures span {
+  color: var(--mova-danger);
+}
+
+.app-uninstall-warnings,
+.app-uninstall-failures,
+.app-uninstall-moved {
+  border: 1px solid var(--glass-separator);
+  border-radius: var(--chrome-control-radius);
+}
+
+.app-uninstall-failures li,
+.app-uninstall-moved li {
+  display: grid;
+  gap: 3px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.app-uninstall-moved summary {
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.app-uninstall-failures li + li,
+.app-uninstall-warnings li + li,
+.app-uninstall-moved li {
+  border-top: 1px solid var(--glass-separator);
+}
+
+.app-uninstall-dialog .app-uninstall-footer {
+  flex-flow: row wrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.app-uninstall-summary {
+  display: grid;
+  flex: 1 1 200px;
+  gap: 2px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-uninstall-summary small {
+  color: var(--glass-muted-text);
+  font-size: 11px;
+}
+
+.app-uninstall-item-detail .app-uninstall-blocked {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  color: var(--mova-warning);
+}
+
+.app-uninstall-blocked svg {
+  flex: none;
+  margin-top: 2px;
+}

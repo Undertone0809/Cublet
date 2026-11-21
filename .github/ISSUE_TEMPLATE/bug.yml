@@ -1,0 +1,26 @@
+name: Bug report
+description: Report unexpected behavior in Cublet for macOS.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please use a disposable directory or app to reproduce the issue. Remove personal paths, filenames, and scan data from any attachments. Report suspected vulnerabilities through the repository Security tab.
+  - type: input
+    id: environment
+    attributes:
+      label: Cublet version, macOS version and Mac architecture
+      placeholder: Cublet 0.6.1, macOS 15, Apple Silicon
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true

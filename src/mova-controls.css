@@ -1,0 +1,446 @@
+/* Compact desktop adaptation of Mova category-select/context-menu, @mova-ui/react 0.4.8.
+   Base UI supplies accessible selection and overlay behavior. See components/mova/README.md. */
+.mova-select-wrapper {
+  position: relative;
+  width: fit-content;
+  min-width: 0;
+}
+
+.mova-select-trigger[data-slot="native-select"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--chrome-control-height, 32px);
+  height: var(--chrome-control-height, 32px);
+  padding: 0 10px;
+  color: var(--foreground);
+  background: var(--glass-control, var(--background));
+  border: 1px solid var(--glass-control-edge, var(--border));
+  border-radius: var(--chrome-control-radius, 8px);
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.mova-select-trigger[data-slot="native-select"]:hover:not(:disabled),
+.mova-select-trigger[data-popup-open] {
+  background: var(--glass-control-hover, var(--mova-surface-raised));
+  border-color: var(--glass-control-edge, var(--mova-border-strong));
+}
+
+.mova-select-trigger[data-slot="native-select"]:focus-visible {
+  border-color: var(--chrome-accent, var(--ring));
+}
+
+.mova-select-trigger:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.mova-select-value {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mova-select-icon {
+  display: flex;
+  flex: none;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  transition: transform 160ms ease;
+}
+
+.mova-select-trigger[data-popup-open] .mova-select-icon {
+  transform: rotate(180deg);
+}
+
+.mova-select-positioner {
+  z-index: 80;
+  outline: none;
+}
+
+.mova-select-popup,
+[data-slot="dialog-content"].mova-dialog {
+  color: var(--foreground);
+  background: var(--chrome-overlay, var(--popover));
+  border: 1px solid var(--glass-control-edge, var(--mova-border-strong));
+  border-radius: var(--chrome-panel-radius, 14px);
+  box-shadow: var(--chrome-overlay-shadow, 0 12px 36px rgb(0 0 0 / .2));
+  font-family: var(--chrome-font, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif);
+}
+
+.mac-native-window :is(.mova-select-popup, .mova-dialog, [data-slot="dialog-overlay"]) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.mova-select-popup {
+  min-width: min(var(--anchor-width), calc(100vw - 24px));
+  max-width: min(480px, calc(100vw - 24px));
+  max-height: min(360px, var(--available-height));
+  overflow: hidden;
+  padding: 4px;
+  transform-origin: var(--transform-origin);
+  transition: opacity 160ms ease, transform 160ms var(--mova-ease);
+}
+
+.mova-select-popup[data-starting-style],
+.mova-select-popup[data-ending-style] {
+  opacity: 0;
+  transform: translateY(-4px) scale(.98);
+}
+
+.mova-select-list {
+  max-height: min(350px, calc(var(--available-height) - 10px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  outline: none;
+}
+
+.mova-select-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: var(--chrome-control-height, 32px);
+  padding: 6px 31px 6px 10px;
+  border-radius: var(--chrome-control-radius, 8px);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+}
+
+.mova-select-item[data-highlighted] {
+  background: var(--glass-selection-hover, var(--mova-surface-active));
+}
+
+.mova-select-item[data-selected] {
+  color: var(--foreground);
+  background: var(--chrome-selected, var(--mova-surface));
+  font-weight: 600;
+}
+
+.mova-select-item[data-selected][data-highlighted] {
+  box-shadow: inset 0 0 0 1px var(--glass-control-edge, var(--mova-border-strong));
+}
+
+.mova-select-item[data-disabled] {
+  opacity: .45;
+  cursor: default;
+}
+
+.mova-select-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mova-select-check {
+  position: absolute;
+  right: 10px;
+  display: flex;
+  color: var(--chrome-accent, var(--foreground));
+}
+
+.mova-select-group {
+  padding: 8px 10px 4px;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  font-size: 11px;
+}
+
+[data-slot="dialog-content"].mova-dialog {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  line-height: 1.5;
+}
+
+[data-slot="dialog-content"].mova-dialog:has(> [data-slot="dialog-body"]) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mova-dialog > [data-slot="dialog-header"],
+.mova-dialog > [data-slot="dialog-footer"] {
+  flex: none;
+}
+
+.mova-dialog > [data-slot="dialog-header"] {
+  padding-right: 0;
+}
+
+.mova-dialog:has(> [data-slot="dialog-close"]) > [data-slot="dialog-header"] {
+  padding-right: 34px;
+}
+
+.mova-dialog > [data-slot="dialog-footer"] {
+  background: var(--chrome-table-head, var(--mova-surface-raised));
+  border-color: var(--glass-separator, var(--border));
+  border-radius: 0 0 var(--chrome-panel-radius, 14px) var(--chrome-panel-radius, 14px);
+}
+
+.mova-dialog [data-slot="dialog-title"]:focus {
+  outline: none;
+}
+
+.mova-dialog [data-slot="dialog-title"],
+.mova-dialog [data-slot="dialog-description"],
+.mova-dialog [data-slot="dialog-body"] {
+  overflow-wrap: anywhere;
+}
+
+.mova-dialog [data-slot="dialog-title"] {
+  font-family: inherit;
+}
+
+.mova-dialog [data-slot="dialog-description"] {
+  color: var(--glass-muted-text, var(--muted-foreground));
+}
+
+.mova-dialog > [data-slot="dialog-body"] {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.mova-dialog .scan-detail-list {
+  max-height: none;
+  overflow: visible;
+}
+
+.mova-dialog [data-slot="button"] {
+  min-height: var(--chrome-control-height, 32px);
+  padding: 0 10px;
+  border-radius: var(--chrome-control-radius, 8px) !important;
+  font-size: 12px;
+}
+
+.mova-dialog [data-slot="button"][data-size^="icon"] {
+  width: var(--chrome-control-height, 32px);
+  height: var(--chrome-control-height, 32px);
+  padding: 0;
+}
+
+.mova-dialog [data-slot="button"]:hover:not(:disabled) {
+  transform: none;
+}
+
+.mova-dialog [data-slot="button"]:hover:not(:disabled):not(:focus-visible) {
+  box-shadow: none;
+}
+
+.mova-dialog [data-slot="button"][data-variant="outline"] {
+  background: var(--glass-control, transparent);
+  border-color: var(--glass-control-edge, var(--mova-border-strong));
+}
+
+.mova-dialog [data-slot="button"][data-variant="outline"]:hover:not(:disabled) {
+  background: var(--glass-control-hover, var(--mova-surface-active));
+}
+
+.mova-dialog [data-slot="button"][data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--glass-selection-hover, var(--mova-surface-active));
+}
+
+[data-slot="tooltip-content"].mova-tooltip {
+  max-width: min(440px, calc(100vw - 24px));
+  font-family: var(--chrome-font, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mova-dialog,
+  [data-slot="dialog-overlay"],
+  .mova-tooltip {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .mova-select-trigger,
+  .mova-select-icon,
+  .mova-select-popup {
+    transition: none;
+  }
+
+  .mova-select-popup[data-starting-style],
+  .mova-select-popup[data-ending-style] {
+    transform: none;
+  }
+}
+
+[data-slot="checkbox"][data-indeterminate] { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+[data-slot="checkbox"][data-indeterminate] [data-slot="checkbox-indicator"] > svg { display: none; }
+[data-slot="checkbox"][data-indeterminate] [data-slot="checkbox-indicator"]::after { content: ''; width: 9px; height: 2px; border-radius: 1px; background: currentColor; }
+
+/* Mova pill-tabs: shared spring indicator, compact macOS surface adaptation. */
+.mova-segmented-control {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  width: fit-content;
+  max-width: 100%;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--glass-control-edge, var(--mova-border));
+  border-radius: var(--chrome-control-radius, 8px);
+  background: var(--glass-control, var(--mova-surface));
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.mova-segmented-item {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 25px;
+  padding: 0 11px;
+  color: var(--glass-muted-text, var(--muted-foreground));
+  background: transparent;
+  border: 0;
+  border-radius: max(4px, calc(var(--chrome-control-radius, 8px) - 3px));
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+  transition: color var(--mova-fast) var(--mova-ease);
+}
+
+.mova-segmented-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--glass-selection-hover, var(--mova-surface-hover));
+  opacity: 0;
+  transition: opacity var(--mova-fast) var(--mova-ease);
+  pointer-events: none;
+}
+
+.mova-segmented-item:hover:not(:disabled) { color: var(--foreground); }
+.mova-segmented-item:hover:not(:disabled)::before { opacity: 1; }
+.mova-segmented-item[aria-pressed='true'] { color: var(--foreground); }
+.mova-segmented-item:focus-visible { outline: 2px solid var(--chrome-accent, var(--ring)); outline-offset: 1px; }
+.mova-segmented-item:disabled { opacity: .45; cursor: default; }
+
+.mova-segmented-indicator {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border: 1px solid var(--glass-control-edge, var(--mova-border));
+  border-radius: inherit;
+  background: var(--chrome-selected, var(--background));
+  box-shadow: 0 1px 3px rgb(0 0 0 / .09), inset 0 1px 0 rgb(255 255 255 / .12);
+  pointer-events: none;
+}
+
+.mova-segmented-label { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; pointer-events: none; }
+.mova-segmented-icon { display: inline-flex; }
+.mova-segmented-icon > svg { width: 14px; height: 14px; }
+
+/* From Mova inset-action-button: a small inner surface responds to the pointer
+   without moving the control's hit target or changing the native drag region. */
+.mova-button[data-slot='button'] { position: relative; isolation: isolate; }
+.mova-button[data-slot='button']::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 3px;
+  border-radius: max(3px, calc(var(--chrome-control-radius, 8px) - 3px));
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, currentColor 7%, transparent);
+  opacity: 0;
+  transform: scale(.82);
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 190ms cubic-bezier(.2, .8, .2, 1);
+}
+.mova-button[data-slot='button']:is(:hover, :focus-visible, :active, [aria-expanded='true']):not(:disabled):not([aria-disabled='true'])::before { opacity: 1; transform: scale(1); }
+.mova-button[data-slot='button']:active:not(:disabled):not([aria-disabled='true'])::before { transform: scale(.95); }
+.mova-button[data-slot='button'][data-variant='link']::before { content: none; }
+
+/* Mova checkbox-draw stroke; keep the indicator mounted for a real reverse
+   transition, including indeterminate selections managed by Base UI. */
+.mova-checkbox [data-slot='checkbox-indicator'] {
+  opacity: 0;
+  transform: scale(.75);
+  transition: opacity var(--mova-fast) var(--mova-ease), transform 200ms var(--mova-ease);
+}
+.mova-checkbox:is([data-checked], [data-indeterminate]) [data-slot='checkbox-indicator'] { opacity: 1; transform: scale(1); }
+.mova-checkbox [data-slot='checkbox-indicator'] path { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 200ms var(--mova-ease); }
+.mova-checkbox[data-checked] [data-slot='checkbox-indicator'] path { stroke-dashoffset: 0; }
+
+/* Base UI retains these portals through its starting/ending transition states.
+   Transform uses scale/translate individually to preserve centered positioning. */
+.mova-dialog-backdrop { opacity: 1; transition: opacity 200ms var(--mova-ease); }
+.mova-dialog-backdrop:is([data-starting-style], [data-ending-style]) { opacity: 0; }
+[data-slot='dialog-content'].mova-dialog {
+  opacity: 1;
+  scale: 1;
+  transition: opacity 200ms var(--mova-ease), scale 250ms var(--mova-ease);
+}
+[data-slot='dialog-content'].mova-dialog:is([data-starting-style], [data-ending-style]) { opacity: 0; scale: .96; }
+[data-slot='dialog-content'].mova-dialog[data-ending-style],
+.mova-dialog-backdrop[data-ending-style] { transition-duration: 150ms; }
+
+[data-slot='tooltip-content'].mova-tooltip {
+  opacity: 1;
+  scale: 1;
+  translate: 0 0;
+  transition: opacity 150ms ease-out, scale 150ms ease-out, translate 150ms ease-out;
+}
+[data-slot='tooltip-content'].mova-tooltip:is([data-starting-style], [data-ending-style]) { opacity: 0; scale: .98; translate: 0 3px; }
+[data-slot='tooltip-content'].mova-tooltip[data-ending-style] { transition-duration: 80ms; }
+.mova-select-item { transition: background-color var(--mova-fast) var(--mova-ease), color var(--mova-fast) var(--mova-ease); }
+.mova-select-trigger[data-slot='native-select'] { transition: background-color var(--mova-fast) var(--mova-ease), border-color var(--mova-fast) var(--mova-ease), scale var(--mova-fast) var(--mova-ease); }
+.mova-select-trigger[data-slot='native-select']:active:not(:disabled) { scale: .985; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mova-segmented-item,
+  .mova-segmented-item::before,
+  .mova-button[data-slot='button'],
+  .mova-button[data-slot='button']::before,
+  .mova-checkbox,
+  .mova-checkbox [data-slot='checkbox-indicator'],
+  .mova-checkbox [data-slot='checkbox-indicator'] path,
+  .mova-select-trigger[data-slot='native-select'],
+  .mova-select-item,
+  .mova-dialog-backdrop,
+  [data-slot='dialog-content'].mova-dialog,
+  [data-slot='tooltip-content'].mova-tooltip { transition: none !important; }
+
+  .mova-button[data-slot='button']::before,
+  .mova-checkbox [data-slot='checkbox-indicator'] { transform: none !important; }
+
+  .mova-button[data-slot='button']:is(:hover, :active),
+  .mova-checkbox:is(:hover, :active) { transform: none !important; }
+
+  .mova-select-trigger[data-slot='native-select']:active,
+  [data-slot='dialog-content'].mova-dialog,
+  [data-slot='tooltip-content'].mova-tooltip { scale: 1 !important; }
+
+  [data-slot='tooltip-content'].mova-tooltip { translate: 0 0 !important; }
+}
+
+/* Legacy Base UI tabs retain their tab/panel semantics and reuse Mova's pill. */
+.mova-tabs-trigger[data-slot='tabs-trigger'] { isolation: isolate; }
+.mova-tabs-trigger[data-slot='tabs-trigger'][data-active] { background: transparent; border-color: transparent; box-shadow: none; }
+[data-slot='tabs-list'][data-variant='line'] .mova-tabs-trigger > .mova-segmented-indicator { display: none; }

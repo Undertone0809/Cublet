@@ -1,0 +1,127 @@
+{
+  "name": "cublet",
+  "private": true,
+  "version": "0.6.1",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "electron": "electron .",
+    "electron:dev": "node electron/dev.cjs",
+    "electron:build:core": "cargo build --manifest-path rust-core/Cargo.toml --bin codex-core",
+    "electron:build:core:release": "cargo build --release --manifest-path rust-core/Cargo.toml --bin codex-core",
+    "electron:package": "node scripts/package-macos.mjs --dir",
+    "electron:package:mac": "node scripts/package-macos.mjs",
+    "verify:macos": "./scripts/verify-macos-release.sh"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.7.0",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/modifiers": "^9.0.0",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/outfit": "^5.3.0",
+    "@tanstack/react-table": "^9.2.4",
+    "@tanstack/react-virtual": "^3.13.12",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "electron-updater": "6.8.11",
+    "framer-motion": "^12.23.12",
+    "lucide-react": "^0.468.0",
+    "next-themes": "^0.4.6",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "recharts": "^3.8.0",
+    "shadcn": "^4.19.0",
+    "sonner": "^2.0.8",
+    "tailwind-merge": "^3.3.1",
+    "tw-animate-css": "^1.4.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.4.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.2",
+    "electron": "44.11.5",
+    "electron-builder": "^26.15.3",
+    "esbuild": "0.28.2",
+    "playwright": "^1.63.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9.2",
+    "vite": "7.3.8"
+  },
+  "build": {
+    "appId": "com.zeeland.codex-storage-manager.electron",
+    "productName": "Cublet",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!electron/**/*.test.cjs",
+      "!electron/dev.cjs",
+      "electron-runtime/**/*",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": ".build/${arch}/codex-core",
+        "to": "bin/codex-core"
+      },
+      {
+        "from": ".build/${arch}/codex-core",
+        "to": "bin/cublet-cleaner"
+      },
+      {
+        "from": ".build/${arch}/licenses",
+        "to": "licenses"
+      }
+    ],
+    "directories": {
+      "output": "electron-dist"
+    },
+    "icon": "assets/icon.png",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "notarize": false,
+      "binaries": [
+        "Contents/Resources/bin/codex-core",
+        "Contents/Resources/bin/cublet-cleaner"
+      ],
+      "minimumSystemVersion": "13.0"
+    },
+    "artifactName": "Cublet-${version}-${arch}.${ext}",
+    "afterExtract": "scripts/preserve-electron-notices.cjs",
+    "afterSign": "scripts/notarize-app.cjs",
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://downloads.cublet.cc/updates/stable/${arch}/"
+      }
+    ]
+  },
+  "description": "Fast local disk analysis and safe cleanup for macOS",
+  "author": "Zeeland"
+}
