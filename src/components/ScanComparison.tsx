@@ -9,6 +9,7 @@ import { GROWTH_PREFERENCES_KEY, growthPreferenceFor, localDayKey, readGrowthPre
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { DiskTreemap } from "./DiskTreemap";
 import { SpaceSelection } from "./SpaceSelection";
+import { AgentScanHistory } from "./AgentScanHistory";
 import "../scan-comparison.css";
 
 export type ScanComparisonProps = {
@@ -241,6 +242,7 @@ export function ScanComparison({ scan, currentPath, locale, height, query = "", 
           : tr("尚无已保存扫描", "No saved scan yet")}
       </span>
       {range && <span className="comparison-range" title={`${date(rangeStart)} → ${date(rangeEnd)}`}>{range}</span>}
+      <AgentScanHistory locale={locale} />
     </div>
     {scanNotice && <div className="comparison-scan-notice" data-testid="growth-scan-notice" role="status">
       <span>{scanNotice}</span>

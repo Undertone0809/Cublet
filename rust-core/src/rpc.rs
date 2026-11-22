@@ -40,6 +40,9 @@ fn encode<T: serde::Serialize>(value: T) -> Result<Value, String> {
 pub fn dispatch(method: &str, params: Value) -> Result<Value, String> {
     match method {
         "get_agent_activity" => encode(crate::agent_activity::get_agent_activity()?),
+        "get_agent_scan_history" => encode(crate::macdisk::history::agent_history(
+            optional_parameter::<String>(&params, "scopeId")?.as_deref(),
+        )?),
         "get_cleanup_disposition" => encode(crate::cleanup_disposition::get()?),
         "set_cleanup_disposition" => encode(crate::cleanup_disposition::set(parameter(
             &params, "mode",

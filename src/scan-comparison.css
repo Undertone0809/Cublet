@@ -35,6 +35,14 @@
 .comparison-baseline-select { flex: none; max-width: min(290px, 100%); }
 .comparison-baseline-select .mova-select-trigger[data-slot="native-select"] { min-height: 28px; height: 28px; font-size: 11px; }
 .comparison-range { min-width: 0; color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.comparison-mcp-trigger { margin-inline-start: auto; }
+.comparison-mcp-dialog { max-width: min(460px, calc(100% - 2rem)); }
+.comparison-mcp-body { display: grid; gap: 12px; }
+.comparison-mcp-body p { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--muted-foreground); font-size: 12px; }
+.comparison-mcp-scope { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.comparison-mcp-scope strong { font-size: 13px; font-weight: 550; }
+.comparison-mcp-scope span { color: var(--muted-foreground); font-size: 11px; }
+.comparison-mcp-dialog .comparison-metrics { padding-top: 10px; border-top: 1px solid var(--border); }
 @media (max-width: 760px) { .comparison-baseline-row { gap: 5px 8px; } .comparison-range { font-size: 10px; } }
 
 .comparison-saved-endpoint { min-width: 0; color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }

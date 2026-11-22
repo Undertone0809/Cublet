@@ -40,6 +40,8 @@ pub(super) struct Record {
     // A single component obtained from cache enumeration, never an RPC path.
     filename: String,
     stamp: Stamp,
+    #[serde(skip)]
+    measurement: Measurement,
 }
 impl Record {
     pub(super) fn is_current(&self) -> bool {
@@ -132,7 +134,7 @@ fn read_catalog(directory: &Path) -> Catalog {
     let Some(identity) = stamp(&path).filter(|stamp| stamp.length <= MAX_CATALOG_BYTES) else {
         return Catalog::default();
     };
-    let Some(bytes) = read_cache_bytes(&path) else {
+    let Some(bytes) = read_locked_cache_bytes(&path) else {
         return Catalog::default();
     };
     if stamp(&path) != Some(identity) {
@@ -152,14 +154,21 @@ fn read_catalog(directory: &Path) -> Catalog {
         .unwrap_or_default();
     // A catalog is an index, not evidence. On process reload validate every
     // cached summary against its archive header before presenting timestamps.
-    catalog.records.retain(|row| {
-        stamp(&directory.join(&row.filename)).as_ref() == Some(&row.stamp)
-            && header(&directory.join(&row.filename), row.stamp.clone()).is_some_and(|actual| {
+    catalog.records = catalog
+        .records
+        .into_iter()
+        .filter_map(|row| {
+            let path = directory.join(&row.filename);
+            if stamp(&path).as_ref() != Some(&row.stamp) {
+                return None;
+            }
+            header(&path, row.stamp).filter(|actual| {
                 actual.summary == row.summary
                     && actual.key == row.key
                     && actual.policy == row.policy
             })
-    });
+        })
+        .collect();
     catalog
 }
 fn save(directory: &Path, state: &mut State) {
@@ -219,10 +228,21 @@ struct SnapshotHeader {
     #[serde(default)]
     freshness: Option<String>,
     roots: Vec<String>,
+    allocated_bytes: u64,
+    scanned_files: u64,
+    coverage_complete: bool,
     started_at_ms: u64,
     updated_at_ms: u64,
     #[serde(default)]
     index_policy_version: u32,
+}
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Measurement {
+    roots: Vec<String>,
+    allocated_bytes: u64,
+    scanned_files: u64,
+    coverage_complete: bool,
 }
 #[cfg(test)]
 static HEADER_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -233,7 +253,7 @@ pub(super) fn header_reads() -> usize {
 fn header(path: &Path, identity: Stamp) -> Option<Record> {
     #[cfg(test)]
     HEADER_READS.fetch_add(1, Ordering::Relaxed);
-    let bytes = read_cache_bytes(path)?;
+    let bytes = read_locked_cache_bytes(path)?;
     let header: Header = serde_json::from_slice(&bytes).ok()?;
     if header.key.len() > 4096
         || header.snapshot.roots.len() > 8
@@ -291,9 +311,22 @@ fn header(path: &Path, identity: Stamp) -> Option<Record> {
         policy: header.snapshot.index_policy_version,
         filename,
         stamp: identity,
+        measurement: Measurement {
+            roots: header.snapshot.roots,
+            allocated_bytes: header.snapshot.allocated_bytes,
+            scanned_files: header.snapshot.scanned_files,
+            coverage_complete: header.snapshot.coverage_complete,
+        },
     })
 }
 fn sync<'a>(directory: &Path, state: &'a mut State) -> &'a mut Catalog {
+    let files = cache_files(directory, false).unwrap_or_default();
+    if refresh_catalog(directory, state, files) {
+        save(directory, state);
+    }
+    &mut state.catalog
+}
+fn refresh_catalog(directory: &Path, state: &mut State, files: Vec<CacheFile>) -> bool {
     let on_disk = stamp(&catalog_path(directory));
     if state.directory.as_deref() != Some(directory) || state.catalog_stamp != on_disk {
         state.catalog = read_catalog(directory);
@@ -307,56 +340,51 @@ fn sync<'a>(directory: &Path, state: &'a mut State) -> &'a mut Catalog {
             && stamp(&directory.join(&row.filename)).as_ref() == Some(&row.stamp)
     });
     let mut changed = before != state.catalog.records.len();
-    if let Ok(files) = cache_files(directory, false) {
-        for file in files {
-            if file.path.extension().is_none_or(|ext| ext != "json")
-                || file.path.to_string_lossy().ends_with(".partial.json")
-            {
-                continue;
-            }
-            let Some(identity) = stamp(&file.path) else {
-                continue;
-            };
-            if state
-                .catalog
-                .records
-                .iter()
-                .any(|row| directory.join(&row.filename) == file.path && row.stamp == identity)
-            {
-                continue;
-            }
-            let name = file
-                .path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            let rejected_stamp = (identity.clone(), file.modified);
-            if state.rejected.get(&name) == Some(&rejected_stamp) {
-                continue;
-            }
-            if let Some(row) = header(&file.path, identity) {
-                state.rejected.remove(&name);
-                state.catalog.records.push(row);
-                changed = true;
-            } else {
-                if state.rejected.len() >= MAX_CATALOG_ROWS {
-                    if let Some(evicted) = state.rejected.keys().next().cloned() {
-                        state.rejected.remove(&evicted);
-                    }
+    for file in files {
+        if file.path.extension().is_none_or(|ext| ext != "json")
+            || file.path.to_string_lossy().ends_with(".partial.json")
+        {
+            continue;
+        }
+        let Some(identity) = stamp(&file.path) else {
+            continue;
+        };
+        if state
+            .catalog
+            .records
+            .iter()
+            .any(|row| directory.join(&row.filename) == file.path && row.stamp == identity)
+        {
+            continue;
+        }
+        let name = file
+            .path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let rejected_stamp = (identity.clone(), file.modified);
+        if state.rejected.get(&name) == Some(&rejected_stamp) {
+            continue;
+        }
+        if let Some(row) = header(&file.path, identity) {
+            state.rejected.remove(&name);
+            state.catalog.records.push(row);
+            changed = true;
+        } else {
+            if state.rejected.len() >= MAX_CATALOG_ROWS {
+                if let Some(evicted) = state.rejected.keys().next().cloned() {
+                    state.rejected.remove(&evicted);
                 }
-                state.rejected.insert(name, rejected_stamp);
             }
+            state.rejected.insert(name, rejected_stamp);
         }
     }
     state.catalog.records.sort_by_key(|row| {
         std::cmp::Reverse((row.summary.updated_at_ms, row.summary.started_at_ms))
     });
     state.catalog.records.truncate(MAX_CATALOG_ROWS);
-    if changed {
-        save(directory, state);
-    }
-    &mut state.catalog
+    changed
 }
 pub(super) fn records(key: &str, policy: u32) -> Vec<Record> {
     let Ok(_storage) = cache_storage_lock().lock() else {
@@ -391,6 +419,115 @@ pub(super) fn records(key: &str, policy: u32) -> Vec<Record> {
         .filter(|row| seen.insert(row.summary.id.clone()))
         .cloned()
         .collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentScope {
+    id: String,
+    allow_protected: bool,
+    current: Summary,
+    #[serde(flatten)]
+    measurement: Measurement,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentChange {
+    baseline: Summary,
+    status: String,
+    growth_bytes: u64,
+    reduction_bytes: u64,
+    net_bytes: i64,
+    limited: bool,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentHistory {
+    scopes: Vec<AgentScope>,
+    selected_scope_id: Option<String>,
+    comparison: Option<AgentChange>,
+}
+
+/// Read only the MCP namespace. Browsing neither pins archives nor creates a job.
+pub(crate) fn agent_history(requested_scope: Option<&str>) -> Result<AgentHistory, String> {
+    const MAX_AGENT_SCOPES: usize = 20;
+    static AGENT_HISTORY: OnceLock<Mutex<State>> = OnceLock::new();
+    let Some(directory) = cache_directory_for(true) else {
+        return Ok(AgentHistory::default());
+    };
+    let mut state = AGENT_HISTORY
+        .get_or_init(|| Mutex::new(State::default()))
+        .lock()
+        .map_err(|_| "MCP scan history unavailable")?;
+    let Some(storage) = cache_process_lock_at(&directory, true)? else {
+        // The MCP writer creates this lock before its first publication.
+        return Ok(AgentHistory::default());
+    };
+    let files = cache_files(&directory, false).map_err(|error| error.to_string())?;
+    refresh_catalog(&directory, &mut state, files);
+    let records = &state.catalog.records;
+    let mut seen = HashSet::new();
+    let current: Vec<_> = records
+        .iter()
+        .filter(|row| seen.insert(&row.key))
+        .take(MAX_AGENT_SCOPES)
+        .collect();
+    let scopes: Vec<_> = current
+        .iter()
+        .map(|row| AgentScope {
+            id: scope_id(&row.key, row.policy),
+            allow_protected: row.key.starts_with("protected=true\n"),
+            current: row.summary.clone(),
+            measurement: row.measurement.clone(),
+        })
+        .collect();
+    let position = requested_scope
+        .and_then(|id| scopes.iter().position(|scope| scope.id == id))
+        .unwrap_or(0);
+    let Some((selected, latest)) = scopes.get(position).zip(current.get(position)) else {
+        return Ok(AgentHistory::default());
+    };
+    let selected_scope_id = Some(selected.id.clone());
+    let baseline = records.iter().find(|row| {
+        row.key == latest.key
+            && row.policy == latest.policy
+            && row.policy > 0
+            && row.summary.id != latest.summary.id
+            && row.summary.started_at_ms <= latest.summary.started_at_ms
+    });
+    let pair = baseline
+        .map(|baseline| {
+            let read = |row: &Record| {
+                let path = directory.join(&row.filename);
+                read_locked_cache_bytes(&path)
+                    .and_then(|bytes| decode_cache(&bytes, &row.key, false))
+                    .filter(|cache| snapshot_id(&row.key, &cache.snapshot) == row.summary.id)
+                    .ok_or("Saved MCP scan changed or could not be read; refresh to retry")
+            };
+            Ok::<_, &str>((baseline.summary.clone(), read(baseline)?, read(latest)?))
+        })
+        .transpose()?;
+    drop(storage);
+    drop(state);
+    let comparison = pair.map(|(baseline, before, after)| {
+        let mut result = DiskScanComparison::default();
+        compare_archives(&before, &after, None, &mut result);
+        AgentChange {
+            baseline,
+            status: result.status,
+            growth_bytes: result.growth_bytes,
+            reduction_bytes: result.reduction_bytes,
+            net_bytes: result.net_bytes,
+            limited: result.limited,
+        }
+    });
+    Ok(AgentHistory {
+        scopes,
+        selected_scope_id,
+        comparison,
+    })
 }
 pub(super) fn select(key: &str, policy: u32, id: &str) {
     let Ok(_storage) = cache_storage_lock().lock() else {

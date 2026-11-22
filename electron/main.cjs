@@ -23,7 +23,7 @@ const entryActions = createEntryActions({ shell });
 const appMeasurements = new Map();
 
 const RPC_METHODS = new Set([
-  'get_agent_activity',
+  'get_agent_activity', 'get_agent_scan_history',
   'disk_overview', 'start_disk_scan', 'get_disk_scan', 'get_disk_scan_view', 'cancel_disk_scan',
   'inspect_disk_directory', 'list_disk_directory', 'get_cached_disk_scan',
   'get_disk_cache_settings', 'set_disk_cache_limit', 'get_disk_scan_comparison', 'list_disk_scan_history',

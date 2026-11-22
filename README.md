@@ -28,6 +28,8 @@ macOS permissions determine coverage. You can start with basic access or enable 
 
 Growth compares the latest completed scan with a retained measurement of the same scope. Investigate the folders that grew, drill into the comparison, and inspect added usage, removed usage and net change separately. Choose a retained baseline instead of guessing from today’s largest folders.
 
+Open **MCP scan history** in Growth to see saved Cublet Cleaner scans by scope. When a previous compatible scan is available, the dialog shows the measured added, removed, and net allocation.
+
 Comparison needs compatible completed scans. A missing baseline is shown explicitly, and older measurements can leave the shared local cache as its budget fills. Moves, renames and hard-link attribution can appear as changes; limited comparisons identify the portion they cover.
 
 ![Growth comparing retained measurements and highlighting folders that grew; native development build, synthetic data](https://cublet.cc/images/cublet-growth.webp)

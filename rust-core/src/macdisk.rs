@@ -1,6 +1,6 @@
 //! Read-only, bounded Mac disk inventory. Byte totals use allocated filesystem blocks.
 use serde::{Deserialize, Serialize};
-mod history;
+pub(crate) mod history;
 mod incremental;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
@@ -289,7 +289,7 @@ pub struct DiskScanComparisonEntry {
     pub net_bytes: i64,
     pub detail_limited: bool,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiskScanComparison {
     pub status: String,
@@ -527,28 +527,42 @@ pub fn configure_agent_cache(shared: bool) -> Result<(), String> {
         .map_err(|_| "Agent cache is already configured".into())
 }
 fn cache_process_lock() -> Result<Option<fs::File>, String> {
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::OpenOptionsExt;
     let Some(directory) = cache_directory() else {
         return Ok(None);
     };
-    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let file = fs::OpenOptions::new()
+    cache_process_lock_at(&directory, false)
+}
+fn cache_process_lock_at(directory: &Path, read_only: bool) -> Result<Option<fs::File>, String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !read_only {
+        fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    }
+    let file = match fs::OpenOptions::new()
         .read(true)
-        .write(true)
-        .create(true)
+        .write(!read_only)
+        .create(!read_only)
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(directory.join("storage.lock"))
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(file) => file,
+        Err(error) if read_only && error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
     let metadata = file.metadata().map_err(|e| e.to_string())?;
     if !metadata.is_file() || metadata.nlink() != 1 {
         return Err("Invalid cache lock file".into());
     }
+    let mode = if read_only {
+        libc::LOCK_SH
+    } else {
+        libc::LOCK_EX
+    };
     let started = Instant::now();
     loop {
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } == 0 {
             return Ok(Some(file));
         }
         let error = std::io::Error::last_os_error();
@@ -864,6 +878,9 @@ fn test_cache_root() -> Option<PathBuf> {
     )
 }
 fn cache_directory() -> Option<PathBuf> {
+    cache_directory_for(AGENT_CACHE.get() == Some(&true))
+}
+fn cache_directory_for(agent: bool) -> Option<PathBuf> {
     #[cfg(test)]
     let root = test_cache_root();
     #[cfg(all(not(test), not(feature = "benchmark")))]
@@ -871,12 +888,11 @@ fn cache_directory() -> Option<PathBuf> {
     #[cfg(all(not(test), feature = "benchmark"))]
     let root = debug_cache_root();
     root.map(|p| {
-        p.join(CACHE_APP_DIRECTORY)
-            .join(if AGENT_CACHE.get() == Some(&true) {
-                "agent-disk-scans"
-            } else {
-                "disk-scans"
-            })
+        p.join(CACHE_APP_DIRECTORY).join(if agent {
+            "agent-disk-scans"
+        } else {
+            "disk-scans"
+        })
     })
 }
 fn cache_limit_path() -> Option<PathBuf> {
@@ -1109,6 +1125,10 @@ fn read_cache_bytes(path: &Path) -> Option<Vec<u8>> {
     // A reader must not pin unlinked cache allocation while an evicting writer
     // reserves those supposedly freed blocks for a successor publication.
     let _storage = cache_storage_lock().lock().ok()?;
+    read_locked_cache_bytes(path)
+}
+// The caller holds the storage lock for the namespace containing this file.
+fn read_locked_cache_bytes(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
     let file = open_cache_file(path)?;
     let mut bytes = Vec::new();
@@ -1119,7 +1139,20 @@ fn read_cache_bytes(path: &Path) -> Option<Vec<u8>> {
 }
 fn read_cache_at(path: &Path, key: &str, partial: bool) -> Option<Cache> {
     let data = read_cache_bytes(path)?;
-    let mut value: Cache = serde_json::from_slice(&data).ok()?;
+    let mut value = decode_cache(&data, key, partial)?;
+    // Older snapshots included these paths in application attribution.
+    if let Ok(home) = home() {
+        let caches = home.join("Library/Caches");
+        for app in &mut value.snapshot.applications {
+            app.associated_paths
+                .retain(|path| !Path::new(path).starts_with(&caches));
+        }
+    }
+    touch_cache(path);
+    Some(value)
+}
+fn decode_cache(data: &[u8], key: &str, partial: bool) -> Option<Cache> {
+    let mut value: Cache = serde_json::from_slice(data).ok()?;
     let expected_key = cache_key(
         &value
             .snapshot
@@ -1143,15 +1176,6 @@ fn read_cache_at(path: &Path, key: &str, partial: bool) -> Option<Cache> {
         value.snapshot.coverage_complete = false;
         value.index_complete = false;
     }
-    // Older snapshots included these paths in application attribution.
-    if let Ok(home) = home() {
-        let caches = home.join("Library/Caches");
-        for app in &mut value.snapshot.applications {
-            app.associated_paths
-                .retain(|path| !Path::new(path).starts_with(&caches));
-        }
-    }
-    touch_cache(path);
     Some(value)
 }
 fn read_cache(key: &str) -> Option<Cache> {
