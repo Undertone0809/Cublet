@@ -452,8 +452,8 @@ test('fails closed on unreadable settings and refuses permanent disposal without
   await fs.access(target);
 });
 
-test('discovers exact HTTP, ByHost, embedded helpers, Darwin and verified Containers while protecting weak names', async t => {
-  const { applicationsRoot, home, root, options } = await fixture(t);
+test('discovers verified related files and lets users explicitly select app-name Application Support folders', async t => {
+  const { applicationsRoot, home, root, options, moved } = await fixture(t);
   const target = await makeApp(path.join(applicationsRoot, 'Example.app'));
   const http = await makeResidue(home, 'HTTPStorages');
   const state = await makeResidue(home, 'Saved Application State', BUNDLE_ID + '.savedState');
@@ -489,11 +489,49 @@ test('discovers exact HTTP, ByHost, embedded helpers, Darwin and verified Contai
     assert.equal(rows.get(value).blockedReason, undefined, value);
     assert.equal(rows.get(value).evidenceStrength, 'strong');
   }
-  assert.match(rows.get(nameOnly).blockedReason, /归属线索/);
-  assert.match(rows.get(originalName).blockedReason, /归属线索/);
-  assert.equal(rows.get(nameOnly).protected, true);
+  for (const value of [nameOnly, originalName]) {
+    assert.equal(rows.get(value).blockedReason, undefined, value);
+    assert.equal(rows.get(value).protected, false);
+    assert.equal(rows.get(value).evidence, 'application-name-only');
+    assert.equal(rows.get(value).evidenceStrength, 'weak');
+  }
   assert(!rows.has(wrongHost));
   assert(!rows.has(groupContainer));
+  const result = await service.execute(preview.planId, [rows.get(target).id, rows.get(nameOnly).id]);
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(moved, [target, nameOnly]);
+  await fs.access(originalName);
+});
+
+test('name matching cannot claim another installed app’s exact Application Support folder', async t => {
+  const { applicationsRoot, home, options, moved } = await fixture(t);
+  const target = await makeApp(path.join(applicationsRoot, 'Another App.app'));
+  const otherId = 'com.example.other';
+  const folder = await makeResidue(home, 'Application Support', otherId);
+  const plist = path.join(target, 'Contents', 'Info.plist');
+  const bundle = JSON.parse(await fs.readFile(plist, 'utf8'));
+  await fs.writeFile(plist, JSON.stringify({ ...bundle, CFBundleDisplayName: otherId }));
+  const indexedCopy = path.join(home, 'Downloads', 'Other Copy.app');
+  const service = createAppUninstaller({ ...options,
+    indexedApplications: async ids => ids.includes(otherId) ? [indexedCopy] : [],
+  });
+  const before = await service.preview([target]);
+  assert.equal(before.items.find(item => item.path === folder).blockedReason, undefined);
+
+  const other = await makeApp(path.join(applicationsRoot, 'Other.app'), otherId);
+  await makeApp(indexedCopy, otherId);
+  for (const paths of [[target], [target, other]]) {
+    const plan = await service.preview(paths);
+    const rows = plan.items.filter(item => item.path === folder);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].blockedReason, '目录名称匹配另一个已安装应用的标识');
+  }
+  const parked = path.join(home, 'Other.app');
+  await fs.rename(other, parked);
+  const result = await service.execute(before.planId, before.items.map(item => item.id));
+  assert.deepEqual(moved, [target]);
+  assert.deepEqual(result.failures, [{ path: folder, message: '目录名称匹配另一个已安装应用的标识' }]);
+  await Promise.all([folder, parked, indexedCopy].map(value => fs.access(value)));
 });
 
 test('only previously published local external apps and verified backups become uninstall targets', async t => {
@@ -636,6 +674,7 @@ test('rechecks only selected failed related data after verified application remo
   const { applicationsRoot, home, options, moved } = await fixture(t);
   const target = await makeApp(path.join(applicationsRoot, 'Recovery.app'));
   const cache = await makeResidue(home, 'Caches');
+  const nameOnly = await makeResidue(home, 'Application Support', 'Recovery');
   const logs = await makeResidue(home, 'Logs');
   let allowData = false;
   let policy = { mode: 'trash', revision: 'first' };
@@ -650,29 +689,29 @@ test('rechecks only selected failed related data after verified application remo
     },
   });
   const first = await service.preview([target]);
-  const selected = first.items.filter(item => item.kind === 'app' || item.path === cache).map(item => item.id);
+  const selected = first.items.filter(item => [target, cache, nameOnly].includes(item.path)).map(item => item.id);
   const result = await service.execute(first.planId, selected, 'trash');
   assert.equal(result.recoverableRelated, true);
   assert.deepEqual(result.movedAppPaths, [target]);
-  assert.deepEqual(result.failures.map(item => item.path), [cache]);
+  assert.deepEqual(result.failures.map(item => item.path), [cache, nameOnly]);
   await makeResidue(home, 'HTTPStorages');
   policy = { mode: 'permanent', revision: 'second' };
   const retry = await service.preview([target], first.planId);
   assert.equal(retry.mode, 'permanent');
   assert.equal(retry.items[0].alreadyRemoved, true);
   assert.equal(retry.items[0].bytes, 0);
-  assert.deepEqual(retry.items.slice(1).map(item => item.path), [cache]);
-  assert.deepEqual(seals, [cache]);
-  const retryResult = await service.execute(retry.planId, [retry.items[1].id], 'permanent');
+  assert.deepEqual(retry.items.slice(1).map(item => item.path), [cache, nameOnly]);
+  assert.deepEqual(new Set(seals), new Set([cache, nameOnly]));
+  const retryResult = await service.execute(retry.planId, retry.items.slice(1).map(item => item.id), 'permanent');
   assert.equal(retryResult.recoverableRelated, true);
   assert.deepEqual(retryResult.movedAppPaths, []);
   assert.deepEqual(moved, [target]);
   allowData = true;
   const final = await service.preview([target], retry.planId);
-  const finalResult = await service.execute(final.planId, [final.items[1].id], 'permanent');
-  assert.deepEqual(finalResult.movedPaths, [cache]);
+  const finalResult = await service.execute(final.planId, final.items.slice(1).map(item => item.id), 'permanent');
+  assert.deepEqual(finalResult.movedPaths, [cache, nameOnly]);
   assert.equal(finalResult.recoverableRelated, undefined);
-  assert.deepEqual(moved, [target, cache]);
+  assert.deepEqual(moved, [target, cache, nameOnly]);
   await fs.access(logs);
 });
 
@@ -767,20 +806,24 @@ test('caps verified embedded helper paths across directories and bounds each app
   assert.equal(stamps.find(value => value[0].path === target).length, 3 + 32 * 2);
 });
 
-test('a declared app group is discoverable but remains protected without verified membership', async t => {
+test('declared app groups and unverified sandbox containers are discoverable and protected', async t => {
   const { applicationsRoot, home, options, moved } = await fixture(t);
   const app = await makeApp(path.join(applicationsRoot, 'Shared Container.app'));
   const container = path.join(home, 'Library', 'Group Containers', 'group.com.example.shared');
   await fs.mkdir(container, { recursive: true });
+  const unverified = await makeResidue(home, 'Containers');
   const service = createAppUninstaller({ ...options, declaredGroupIds: async () => ['group.com.example.shared', '../../outside'] });
   const preview = await service.preview([app]);
   const hint = preview.items.find(({ path }) => path === container);
   assert.equal(hint.evidence, 'declared-group-container');
   assert(hint.shared && hint.protected);
+  const unverifiedRow = preview.items.find(({ path }) => path === unverified);
+  assert.equal(unverifiedRow.evidence, 'container-owner-unverified');
+  assert.equal(unverifiedRow.protected, true);
   const result = await service.execute(preview.planId, preview.items.map(({ id }) => id));
   assert.deepEqual(moved, [app]);
-  assert(result.failures.some(({ path }) => path === container));
-  await fs.access(container);
+  assert.deepEqual(new Set(result.failures.map(item => item.path)), new Set([container, unverified]));
+  await Promise.all([container, unverified].map(value => fs.access(value)));
 });
 
 test('residual recovery rechecks new shared copies and running users without broadening paths', async t => {

@@ -46,7 +46,7 @@ Scans and their history stay on your Mac. MCP runs locally, but paths, metadata 
 
 Search Applications by name or path. Full paths distinguish installed copies, renamed backups and discovered builds, so you can review the exact copy you intend to remove. Inspect the app bundle and optional related caches, preferences and app data before confirming the selected items.
 
-Shared or unverified related data is protected with an explanation. Attribution can be incomplete, so review each optional item. Partial results list completed and failed items for another review before retrying.
+Application Support folders that match only the app name are labeled and start unchecked. You can select them after reviewing the path. Cublet keeps shared data, containers with unverified ownership, and name-matched folders whose name is another installed app’s bundle identifier. Partial results list completed and failed items for another review before retrying.
 
 **Application uninstall defaults to permanent deletion.** Choose **Move to Trash** in Settings if you want selected items retained in Finder Trash. Items in Trash still occupy disk space. Emptying Trash is a separate permanent action.
 

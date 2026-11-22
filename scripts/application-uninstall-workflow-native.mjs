@@ -27,12 +27,14 @@ for (const key of ['ELECTRON_RUN_AS_NODE', 'ELECTRON_START_URL', 'ELECTRON_REMOT
 const id = randomUUID().slice(0, 8);
 const commonId = `com.example.cubletfixture.${id}-shared`;
 const singleId = `com.example.cubletfixture.${id}-single`;
+const namedId = `com.example.cubletfixture.${id}-named`;
 const trashId = `com.example.cubletfixture.${id}-trash`;
 const names = {
   main: 'Fixture Rudder.app',
   backup: 'Fixture Rudder.app.pre-test',
   candidate: 'Fixture Rudder Candidate.app',
   single: 'Fixture Solo.app',
+  named: 'Fixture Named.app',
   trash: `Fixture Trash ${id}.app`,
 };
 const paths = {
@@ -40,10 +42,13 @@ const paths = {
   backup: join(applications, names.backup),
   candidate: join(applications, 'candidate', names.candidate),
   single: join(applications, names.single),
+  named: join(applications, names.named),
   trash: join(applications, names.trash),
   shared: join(cacheDirectory, commonId),
   exclusive: join(cacheDirectory, singleId),
   http: join(home, 'Library', 'HTTPStorages', singleId),
+  namedData: join(home, 'Library', 'Application Support', 'Fixture Named'),
+  uncheckedData: join(home, 'Library', 'Application Support', 'Fixture Display Name'),
   untouched: join(home, 'untouched.txt'),
 };
 const screenshots = [];
@@ -139,10 +144,13 @@ try {
   await writeFile(paths.untouched, 'preserve this file');
   for (const key of ['main', 'backup', 'candidate']) await bundle(paths[key], commonId, 'Fixture Rudder', key === 'backup');
   await bundle(paths.single, singleId, 'Fixture Solo', true);
+  await bundle(paths.named, namedId, 'Fixture Display Name');
   await bundle(paths.trash, trashId, 'Fixture Trash');
   await itemDir(paths.shared);
   await itemDir(paths.exclusive);
   await itemDir(paths.http);
+  await itemDir(paths.namedData);
+  await itemDir(paths.uncheckedData);
   const httpNested = join(paths.http, 'nested');
   await itemDir(httpNested);
   const deep = join(paths.single, 'Contents', 'Resources', 'Nested');
@@ -267,6 +275,29 @@ if let window = windows.first(where: { ($0[kCGWindowOwnerPID as String] as? Int)
   await dialog.getByText('Permanently deleted: 1', { exact: true }).waitFor();
   await missing(paths.http);
   await capture('08-full-uninstall.png', 'The remaining selected item was deleted on explicit re-confirmation.');
+  await dialog.getByRole('button', matchExact('Done')).click();
+  await dialog.waitFor({ state: 'hidden' });
+
+  step = 'name-matched Application Support selection and permanent deletion';
+  await showApplication('Fixture Named', paths.named);
+  await preview(paths.named);
+  const namedData = item(paths.namedData);
+  const nameCheck = namedData.getByRole('checkbox');
+  await namedData.getByText('Matched by app name only', { exact: true }).waitFor();
+  assert.equal(await nameCheck.isEnabled(), true);
+  assert.equal(await nameCheck.isChecked(), false);
+  await capture('08a-name-match-preview.png', 'Name-matched folders are visible, selectable and unchecked by default.');
+  await nameCheck.check();
+  await dialog.getByRole('button', matchExact('Check again')).click();
+  await item(paths.named).waitFor();
+  assert.equal(await nameCheck.isChecked(), true);
+  assert.equal(await item(paths.uncheckedData).getByRole('checkbox').isChecked(), false);
+  await capture('08b-name-match-selected.png', 'The selected folder remains checked after rechecking the preview.');
+  await deleteButton.click();
+  await dialog.getByText('Permanently deleted: 2', { exact: true }).waitFor();
+  await Promise.all([missing(paths.named), missing(paths.namedData)]);
+  assert.equal(await readFile(join(paths.uncheckedData, 'sample.txt'), 'utf8'), 'owned fixture');
+  await capture('08c-name-match-result.png', 'The app and checked folder were deleted. The unchecked folder was retained.');
   await dialog.getByRole('button', matchExact('Done')).click();
   await dialog.waitFor({ state: 'hidden' });
 

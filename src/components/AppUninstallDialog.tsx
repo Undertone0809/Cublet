@@ -54,7 +54,8 @@ const uninstallMessages: Record<string, string> = {
   "请先永久删除对应应用": "Related data was kept because its app bundle wasn’t deleted.",
   "请先将对应应用移到废纸篓": "Related data was kept because its app bundle wasn’t moved to Trash.",
   "无法核实永久删除的目录边界，请重新预览": "Couldn’t verify which contents can be permanently deleted. Review again.",
-  "仅发现名称或未核实的归属线索，关联数据受保护": "Ownership is unverified. This data is protected.",
+  "沙盒容器归属无法核实": "Couldn’t verify who owns this app container.",
+  "目录名称匹配另一个已安装应用的标识": "The folder name matches another installed app’s identifier.",
   "其他用户拥有的关联数据受保护": "This data belongs to another user and is protected.",
   "磁盘管家自身受保护": "The running copy of Cublet is protected.",
   "部分项目无法估算大小，列表中的大小可能偏低": "Some sizes couldn’t be measured, so the estimate may be low.",
@@ -89,7 +90,7 @@ export function AppUninstallDialog({ paths, locale, onClose, onMoved, returnFocu
       "container-metadata-exact-id": ["容器元数据确认属于此应用", "Container metadata confirms this app’s ownership"],
       "container-owner-unverified": ["容器位置匹配，归属尚未核实", "Container location matches; ownership is unverified"],
       "declared-group-container": ["应用声明了这个共享容器", "The app declares this group container"],
-      "application-name-only": ["仅名称相同，归属尚未核实", "Name matches only; ownership is unverified"],
+      "application-name-only": ["仅匹配应用名称", "Matched by app name only"],
     };
     const value = labels[evidence];
     return value ? tr(...value) : evidence;
