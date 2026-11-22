@@ -17,7 +17,6 @@ export type DiskApplication = {
   bundleBytes: number;
   bundleBytesKnown?: boolean;
   supportBytes: number;
-  cacheBytes: number;
   sharedData: boolean;
 };
 export type ApplicationSearchResult = {

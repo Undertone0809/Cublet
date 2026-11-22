@@ -293,7 +293,7 @@ function handleCoreRequest(event, request) {
         const measured = appMeasurements.get(entry.path);
         return measured?.bundleId && measured.bundleId === entry.bundleId
           ? { ...entry, bundleBytes: entry.bundleBytesKnown ? entry.bundleBytes : measured.bundleBytes, bundleBytesKnown: true,
-            supportBytes: measured.supportBytes, cacheBytes: measured.cacheBytes, sharedData: measured.sharedData }
+            supportBytes: measured.supportBytes, sharedData: measured.sharedData }
           : entry;
       });
       appIcons.rememberApplications(applications);

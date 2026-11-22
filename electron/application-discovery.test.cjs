@@ -46,7 +46,7 @@ test('discovers both application roots before disk scanning, with explicitly unk
   assert.deepEqual(f.calls, ['']);
   assert.deepEqual(result.applications[0], {
     path: first, name: 'First', version: '1.2.3', bundleId: 'com.example.fixture',
-    bundleBytes: 0, supportBytes: 0, cacheBytes: 0, bundleBytesKnown: false,
+    bundleBytes: 0, supportBytes: 0, bundleBytesKnown: false,
     measurement: 'unknown', sharedData: false,
   });
 });

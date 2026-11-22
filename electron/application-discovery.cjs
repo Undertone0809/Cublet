@@ -140,7 +140,7 @@ function createApplicationDiscovery({
       identity: `${bundle.dev}:${bundle.ino}`,
       application: { path: target, name, bundleId: text(info.CFBundleIdentifier),
         version: text(info.CFBundleShortVersionString) || text(info.CFBundleVersion),
-        bundleBytes: 0, supportBytes: 0, cacheBytes: 0, sharedData: false,
+        bundleBytes: 0, supportBytes: 0, sharedData: false,
         bundleBytesKnown: false, measurement: 'unknown' },
     };
   }

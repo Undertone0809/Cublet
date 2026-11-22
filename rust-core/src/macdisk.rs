@@ -180,7 +180,6 @@ pub struct DiskApplication {
     pub bundle_id: Option<String>,
     pub bundle_bytes: u64,
     pub support_bytes: u64,
-    pub cache_bytes: u64,
     pub associated_paths: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1143,6 +1142,14 @@ fn read_cache_at(path: &Path, key: &str, partial: bool) -> Option<Cache> {
         value.snapshot.status = "cancelled".into();
         value.snapshot.coverage_complete = false;
         value.index_complete = false;
+    }
+    // Older snapshots included these paths in application attribution.
+    if let Ok(home) = home() {
+        let caches = home.join("Library/Caches");
+        for app in &mut value.snapshot.applications {
+            app.associated_paths
+                .retain(|path| !Path::new(path).starts_with(&caches));
+        }
     }
     touch_cache(path);
     Some(value)
@@ -4807,7 +4814,6 @@ impl From<&DiskEntry> for DiskApplication {
             bundle_id: None,
             bundle_bytes: row.allocated_bytes,
             support_bytes: 0,
-            cache_bytes: 0,
             associated_paths: vec![],
         }
     }
@@ -5813,18 +5819,10 @@ fn application_attribution(run: &Run) -> Vec<DiskApplication> {
         names.sort();
         names.dedup();
         for dirname in names {
-            for (group, is_cache) in [
-                ("Caches", true),
-                ("Application Support", false),
-                ("Containers", false),
-            ] {
+            for group in ["Application Support", "Containers"] {
                 let associated_path = string(&home.join("Library").join(group).join(dirname));
                 if let Some(&bytes) = measured.get(associated_path.as_str()) {
-                    if is_cache {
-                        app.cache_bytes += bytes;
-                    } else {
-                        app.support_bytes += bytes;
-                    }
+                    app.support_bytes += bytes;
                     app.associated_paths.push(associated_path);
                 }
             }
@@ -9585,6 +9583,54 @@ mod tests {
             &root,
             false
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn application_attribution_excludes_cache_usage_in_fresh_and_saved_scans() {
+        let root = fixture();
+        let run = fixture_run(&root);
+        let library = home().unwrap().join("Library");
+        let support = library.join("Application Support/Fixture");
+        let cache = library.join("Caches/Fixture");
+        let container = library.join("Containers/Fixture");
+        {
+            let mut snapshot = run.snapshot.lock().unwrap();
+            snapshot.status = "complete".into();
+            snapshot.freshness = "verified".into();
+            snapshot
+                .entries
+                .push(new_entry(&root.join("Fixture.app"), true));
+            for (path, bytes) in [(&support, 20), (&cache, 80), (&container, 10)] {
+                let mut row = new_entry(path, true);
+                row.allocated_bytes = bytes;
+                snapshot.entries.push(row);
+            }
+        }
+        let applications = application_attribution(&run);
+        assert_eq!(applications.len(), 1);
+        let related = vec![string(&support), string(&container)];
+        assert_eq!(applications[0].support_bytes, 30);
+        assert_eq!(applications[0].associated_paths, related);
+        run.snapshot.lock().unwrap().applications = applications;
+
+        let key = cache_key(std::slice::from_ref(&root), true);
+        let mut old = serde_json::to_value(cache_value(&key, &run)).unwrap();
+        let old_app = &mut old["snapshot"]["applications"][0];
+        old_app["cacheBytes"] = serde_json::json!(80);
+        old_app["associatedPaths"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!(string(&cache)));
+        let file = root.join("saved-scan.json");
+        fs::write(&file, serde_json::to_vec(&old).unwrap()).unwrap();
+        let restored = read_cache_at(&file, &key, false).unwrap();
+        let restored_app = &restored.snapshot.applications[0];
+        assert_eq!(restored_app.support_bytes, 30);
+        assert_eq!(restored_app.associated_paths, related);
+        assert!(serde_json::to_value(restored_app)
+            .unwrap()
+            .get("cacheBytes")
+            .is_none());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
