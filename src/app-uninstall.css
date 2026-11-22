@@ -30,7 +30,7 @@
 }
 
 .utility-shell .apps-table :is(.disk-table-head, .disk-table-row) {
-  grid-template-columns: 22px minmax(0, 1fr) minmax(60px, 9%) minmax(58px, 9%) minmax(53px, 9%) minmax(82px, 12%) var(--chrome-control-height);
+  grid-template-columns: 22px minmax(0, 1fr) minmax(60px, 9%) minmax(58px, 9%) minmax(82px, 12%) var(--chrome-control-height);
   gap: 10px;
 }
 

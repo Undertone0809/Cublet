@@ -1223,7 +1223,6 @@ export default function MacApp() {
                       <span role="columnheader">{tr("应用", "Application")}</span>
                       <span role="columnheader">{tr("本体", "Bundle")}</span>
                       <span role="columnheader">{tr("数据", "Data")}</span>
-                      <span role="columnheader">{tr("缓存", "Cache")}</span>
                       <span role="columnheader"
                         title={tr(
                           "仅包含已匹配的数据",
@@ -1255,7 +1254,6 @@ export default function MacApp() {
                           </div>
                           <span role="cell">{app.bundleBytesKnown === false ? <span title={tr("预览时测量", "Measured in preview")}>—</span> : formatBytes(app.bundleBytes)}</span>
                           <span role="cell">{app.supportBytes > 0 ? formatBytes(app.supportBytes) : <span title={tr("预览时查找关联文件", "Related files checked in preview")}>—</span>}</span>
-                          <span role="cell">{app.cacheBytes > 0 ? formatBytes(app.cacheBytes) : <span title={tr("预览时查找关联缓存", "Related caches checked in preview")}>—</span>}</span>
                           <strong className="app-total" role="cell">
                             {app.bundleBytesKnown === false && app.totalBytes === 0 ? "—" : formatBytes(app.totalBytes)}
                             {app.sharedData && <small title={tr("扫描发现其他副本关联到相同的数据或缓存", "Other copies found by the scan match the same data or cache")}>
@@ -1276,7 +1274,7 @@ export default function MacApp() {
                     })}
                     {!apps.length && (
                       <div role="row">
-                        <div className="disk-empty" role="cell" aria-colspan={7}>
+                        <div className="disk-empty" role="cell" aria-colspan={6}>
                           <span role="status">
                             {applicationLoading
                               ? tr("正在查找应用…", "Finding applications…")
