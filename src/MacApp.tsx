@@ -650,7 +650,7 @@ export default function MacApp() {
   const appQuery = applicationQuery.trim().toLowerCase();
   const apps = applications
     .filter((app) => `${app.name} ${app.bundleId ?? ""} ${app.path}`.toLowerCase().includes(appQuery))
-    .map((app) => ({ ...app, totalBytes: app.bundleBytes + app.supportBytes + app.cacheBytes }))
+    .map((app) => ({ ...app, totalBytes: app.bundleBytes + app.supportBytes }))
     .sort((a, b) => (b.sharedData ? b.bundleBytes : b.totalBytes) - (a.sharedData ? a.bundleBytes : a.totalBytes));
   const appSelectionScope = "applications";
   const selectedApps = [...applicationKnown.current.values()].filter(({ path }) =>
@@ -1256,7 +1256,7 @@ export default function MacApp() {
                           <span role="cell">{app.supportBytes > 0 ? formatBytes(app.supportBytes) : <span title={tr("预览时查找关联文件", "Related files checked in preview")}>—</span>}</span>
                           <strong className="app-total" role="cell">
                             {app.bundleBytesKnown === false && app.totalBytes === 0 ? "—" : formatBytes(app.totalBytes)}
-                            {app.sharedData && <small title={tr("扫描发现其他副本关联到相同的数据或缓存", "Other copies found by the scan match the same data or cache")}>
+                            {app.sharedData && <small title={tr("扫描发现其他副本关联到相同的数据", "Other copies found by the scan match the same data")}>
                               {tr("含共享数据", "Includes shared data")}
                             </small>}
                           </strong>

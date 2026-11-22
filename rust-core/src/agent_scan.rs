@@ -713,7 +713,7 @@ fn snapshot_value(scan: &DiskScan, offset: usize, limit: usize, historical: bool
         .min(scan.entries.len());
     let entries = &scan.entries[offset.min(end)..end];
     let applications: Vec<_> = scan.applications.iter().take(MAX_AUXILIARY).map(|app| json!({"path":app.path,"name":app.name,"bundleId":app.bundle_id,
-        "bundleBytes":app.bundle_bytes,"supportBytes":app.support_bytes,"cacheBytes":app.cache_bytes,
+        "bundleBytes":app.bundle_bytes,"supportBytes":app.support_bytes,
         "associatedPaths":app.associated_paths.iter().take(MAX_AUXILIARY).collect::<Vec<_>>(), "associatedPathsTruncated":app.associated_paths.len()>MAX_AUXILIARY})).collect();
     json!({"scanId":scan.scan_id,"status":scan.status,"roots":scan.roots.iter().take(MAX_AUXILIARY).collect::<Vec<_>>(),
         "startedAtMs":scan.started_at_ms,"updatedAtMs":scan.updated_at_ms,"elapsedMs":scan.elapsed_ms,
@@ -1014,7 +1014,6 @@ mod tests {
                 bundle_id: None,
                 bundle_bytes: 0,
                 support_bytes: 0,
-                cache_bytes: 0,
                 associated_paths: vec!["/fixture/data".into(); 501]
             };
             501
@@ -1027,6 +1026,7 @@ mod tests {
             value["applications"].as_array().unwrap().len(),
             MAX_AUXILIARY
         );
+        assert!(value["applications"][0].get("cacheBytes").is_none());
         assert_eq!(
             value["applications"][0]["associatedPaths"]
                 .as_array()
