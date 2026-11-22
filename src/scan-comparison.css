@@ -36,3 +36,8 @@
 .comparison-baseline-select .mova-select-trigger[data-slot="native-select"] { min-height: 28px; height: 28px; font-size: 11px; }
 .comparison-range { min-width: 0; color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .comparison-baseline-row { gap: 5px 8px; } .comparison-range { font-size: 10px; } }
+
+.comparison-saved-endpoint { min-width: 0; color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.comparison-scan-notice { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted-foreground); font-size: 11px; line-height: 1.45; }
+.comparison-scan-notice > span { min-width: 0; }
+.comparison-scan-notice > button { flex: none; }

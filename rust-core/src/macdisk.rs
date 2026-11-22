@@ -238,6 +238,9 @@ pub struct DiskScan {
     pub scan_method: String,
     #[serde(default = "verified_freshness")]
     pub freshness: String,
+    /// A verified measurement that could not become the saved history endpoint.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_save_failed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
 }
@@ -994,12 +997,11 @@ fn set_disk_cache_limit_at(
     settings: &Path,
     limit_mib: u64,
 ) -> Result<DiskCacheSettings, String> {
-    let used_bytes = trim_cache_directory_with_tier(
+    let used_bytes = trim_cache_directory(
         directory,
         None,
         limit_mib * MIB - CATALOG_RESERVE_BYTES,
         usize::MAX,
-        limit_mib,
     )
     .map_err(|e| format!("Cannot reduce disk scan cache: {e}"))?;
     save_cache_limit(settings, limit_mib)
@@ -1296,22 +1298,21 @@ fn trim_cache_directory(
     byte_limit: u64,
     file_limit: usize,
 ) -> std::io::Result<u64> {
-    trim_cache_directory_with_tier(
-        directory,
-        keep,
-        byte_limit,
-        file_limit,
-        configured_cache_limit(),
-    )
+    trim_cache_directory_with_policy(directory, keep, byte_limit, file_limit, true, &[])
 }
-fn trim_cache_directory_with_tier(
+fn trim_cache_directory_with_policy(
     directory: &Path,
     keep: Option<&Path>,
     byte_limit: u64,
     file_limit: usize,
-    tier_mib: u64,
+    evict_snapshots: bool,
+    protected_baselines: &[PathBuf],
 ) -> std::io::Result<u64> {
-    let priorities = history::priorities(directory);
+    let priorities = if evict_snapshots {
+        history::priorities(directory)
+    } else {
+        HashMap::new()
+    };
     let mut files = cache_files(directory, true)?;
     let mut bytes = cache_allocated_bytes(&files);
     let snapshot_count = |files: &[CacheFile]| {
@@ -1325,17 +1326,13 @@ fn trim_cache_directory_with_tier(
             .count()
     };
     let mut count = snapshot_count(&files);
-    let index_priority = match tier_mib {
-        64 => 125,
-        512 => 105,
-        _ => 115,
-    };
     files.sort_by_key(|file| {
         (
             if file.path.to_string_lossy().ends_with(".partial.json") {
                 0
             } else if file.path.to_string_lossy().contains(".index.sqlite") {
-                index_priority
+                // Measured history cannot be rebuilt from the current filesystem.
+                5
             } else {
                 priorities.get(&file.path).copied().unwrap_or(1)
             },
@@ -1353,9 +1350,13 @@ fn trim_cache_directory_with_tier(
                     && path
                         .to_string_lossy()
                         .starts_with(&format!("{}-", keep.display())))
-        }) || path
-            .file_name()
-            .is_some_and(|name| name == "history.catalog")
+        }) || protected_baselines.contains(&path)
+            || path
+                .file_name()
+                .is_some_and(|name| name == "history.catalog")
+            || (!evict_snapshots
+                && path.extension().is_some_and(|ext| ext == "json")
+                && !path.to_string_lossy().ends_with(".partial.json"))
         {
             continue;
         }
@@ -1416,7 +1417,8 @@ fn reserve_incremental_bytes(db_path: &Path, envelope_bytes: u64) -> Result<(), 
     let target = limit
         .checked_sub(additional)
         .ok_or("Incremental store exceeds cache budget")?;
-    trim_cache_directory(directory, Some(db_path), target, usize::MAX)
+    // Decline optional SQLite storage instead of evicting an endpoint or baseline.
+    trim_cache_directory_with_policy(directory, Some(db_path), target, usize::MAX, false, &[])
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1439,16 +1441,17 @@ fn touch_cache(path: &Path) {
 }
 // The generation is checked at rename, after serialization and the temporary write.
 // A stale writer can never replace the last good snapshot or checkpoint.
-fn write_cache(key: &str, run: &Run, partial: bool) {
+fn write_cache(key: &str, run: &Run, partial: bool) -> bool {
     let Ok(mut snapshot) = run.snapshot.lock().map(|s| s.clone()) else {
-        return;
+        return false;
     };
     if !partial && (!reusable_snapshot(&snapshot) || run.cancelled.load(Ordering::Relaxed)) {
-        return;
+        return false;
     }
     let scan_id = snapshot.scan_id.clone();
     // Display partitions can be reconstructed from this source and its index.
     snapshot.treemap_entries.clear();
+    snapshot.history_save_failed = false;
     if partial {
         snapshot.status = "cancelled".into();
         snapshot.coverage_complete = false;
@@ -1478,13 +1481,13 @@ fn write_cache(key: &str, run: &Run, partial: bool) {
     } else {
         cache_file(key)
     }) else {
-        return;
+        return false;
     };
     let Some(parent) = path.parent() else {
-        return;
+        return false;
     };
     if fs::create_dir_all(parent).is_err() {
-        return;
+        return false;
     }
     #[cfg(unix)]
     {
@@ -1494,36 +1497,55 @@ fn write_cache(key: &str, run: &Run, partial: bool) {
     static NEXT_WRITE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let write_id = NEXT_WRITE.fetch_add(1, Ordering::Relaxed);
     let temp = path.with_extension(format!("{scan_id}-{write_id}.tmp"));
-    // Keep the previous complete generation while reserving temporary and final
-    // writes. A tier is a shared space budget, not a snapshot-count/size quota.
-    let old_bytes = fs::symlink_metadata(&path)
-        .map(|meta| allocated(&meta))
-        .unwrap_or(0);
-    let publication_allowance = (configured_cache_limit() * MIB)
-        .saturating_sub(CATALOG_RESERVE_BYTES + old_bytes + 128 * 1024)
-        / 2;
-    let Some(data) = cache_bytes(&mut value, publication_allowance.min(MAX_CACHE_FILE_BYTES))
-    else {
-        return;
-    };
     // Admission precedes the temporary write, including conservative allocation
     // headroom and the independent small history-catalog publication reserve.
     let Ok(mut reg) = registry().lock() else {
-        return;
+        return false;
     };
     if ![reg.active.as_deref(), reg.focused.as_deref()].contains(&Some(scan_id.as_str())) {
-        return;
+        return false;
     }
     let Ok(_storage) = cache_storage_lock().lock() else {
-        return;
+        return false;
+    };
+    let protected_baselines = if partial {
+        Vec::new()
+    } else {
+        history::publication_baselines(key, value.snapshot.index_policy_version)
+    };
+    let Ok(files) = cache_files(parent, false) else {
+        return false;
+    };
+    let protected_files: Vec<_> = files
+        .into_iter()
+        .filter(|file| file.path == path || protected_baselines.contains(&file.path))
+        .collect();
+    let budget = configured_cache_limit() * MIB - CATALOG_RESERVE_BYTES;
+    // Compact the successor if necessary. Keep the old endpoint and either
+    // comparison baseline readable even if a later write or rename fails.
+    let publication_allowance =
+        budget.saturating_sub(cache_allocated_bytes(&protected_files) + 128 * 1024) / 2;
+    let Some(data) = cache_bytes(&mut value, publication_allowance.min(MAX_CACHE_FILE_BYTES))
+    else {
+        return false;
     };
     let reservation = (data.len() as u64)
         .saturating_mul(2)
         .saturating_add(128 * 1024);
-    let available =
-        (configured_cache_limit() * MIB).saturating_sub(CATALOG_RESERVE_BYTES + reservation);
-    if trim_cache_directory(parent, Some(&path), available, usize::MAX).is_err() {
-        return;
+    let Some(available) = budget.checked_sub(reservation) else {
+        return false;
+    };
+    if trim_cache_directory_with_policy(
+        parent,
+        Some(&path),
+        available,
+        usize::MAX,
+        !partial,
+        &protected_baselines,
+    )
+    .is_err()
+    {
+        return false;
     }
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -1532,49 +1554,47 @@ fn write_cache(key: &str, run: &Run, partial: bool) {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    if let Ok(mut file) = options.open(&temp) {
-        use std::io::Write;
-        if file.write_all(&data).is_ok() && file.sync_all().is_ok() {
-            {
-                let newer_checkpoint_exists = partial
-                    && read_cache_bytes(&path)
-                        .and_then(|bytes| serde_json::from_slice::<Cache>(&bytes).ok())
-                        .is_some_and(|existing| {
-                            existing.snapshot.scan_id == scan_id
-                                && (
-                                    existing.snapshot.updated_at_ms,
-                                    existing.snapshot.scanned_files,
-                                    existing.snapshot.scanned_directories,
-                                ) > (
-                                    value.snapshot.updated_at_ms,
-                                    value.snapshot.scanned_files,
-                                    value.snapshot.scanned_directories,
-                                )
-                        });
-                if [reg.active.as_deref(), reg.focused.as_deref()].contains(&Some(scan_id.as_str()))
-                    && !newer_checkpoint_exists
-                    // Retain the previous COMPLETE exact-scope generation before
-                    // atomically publishing its successor. Checkpoints and repeat
-                    // publication of the same scan never advance the baseline.
-                    && (partial || archive_previous_cache(key, &path, &scan_id, write_id))
-                    && fs::rename(&temp, &path).is_ok()
-                {
-                    if !partial {
-                        // Avoid keeping a second full index copy for every past scan.
-                        reg.cached.clear();
-                        if !reg.runs.contains_key(&scan_id) {
-                            reg.cached.insert(key.into(), value);
-                        }
-                        if let Some(checkpoint) = checkpoint_file(key) {
-                            let _ = fs::remove_file(checkpoint);
-                        }
-                    }
-                    let _ = trim_configured_cache(parent, Some(&path));
-                }
-            }
+    let Ok(mut file) = options.open(&temp) else {
+        return false;
+    };
+    use std::io::Write;
+    let newer_checkpoint_exists = partial
+        && read_cache_bytes(&path)
+            .and_then(|bytes| serde_json::from_slice::<Cache>(&bytes).ok())
+            .is_some_and(|existing| {
+                existing.snapshot.scan_id == scan_id
+                    && (
+                        existing.snapshot.updated_at_ms,
+                        existing.snapshot.scanned_files,
+                        existing.snapshot.scanned_directories,
+                    ) > (
+                        value.snapshot.updated_at_ms,
+                        value.snapshot.scanned_files,
+                        value.snapshot.scanned_directories,
+                    )
+            });
+    // Keep the last complete generation before publishing the replacement. The
+    // registry lock keeps the writer current, and readers only see whole files.
+    let published = !newer_checkpoint_exists
+        && file.write_all(&data).is_ok()
+        && file.sync_all().is_ok()
+        && (partial || archive_previous_cache(key, &path, &scan_id, write_id))
+        && fs::rename(&temp, &path).is_ok();
+    if !published {
+        let _ = fs::remove_file(temp);
+        return false;
+    }
+    if !partial {
+        // Avoid keeping a second full index copy for every past scan.
+        reg.cached.clear();
+        if !reg.runs.contains_key(&scan_id) {
+            reg.cached.insert(key.into(), value);
+        }
+        if let Some(checkpoint) = checkpoint_file(key) {
+            let _ = fs::remove_file(checkpoint);
         }
     }
-    let _ = fs::remove_file(temp);
+    true
 }
 fn archive_previous_cache(key: &str, path: &Path, scan_id: &str, write_id: u64) -> bool {
     let Some(existing) = read_cache_at(path, key, false) else {
@@ -1684,14 +1704,17 @@ fn finish_run(key: &str, run: &Run) {
         .map(|s| {
             (
                 s.scan_id.clone(),
-                s.status == "complete"
-                    && s.freshness != "partial"
-                    && !run.cancelled.load(Ordering::Relaxed),
+                reusable_snapshot(&s) && !run.cancelled.load(Ordering::Relaxed),
             )
         })
         .unwrap_or_default();
-    write_cache(key, run, !complete);
-    run.finalized.store(true, Ordering::Relaxed);
+    let published = write_cache(key, run, !complete);
+    if complete && !published {
+        if let Ok(mut snapshot) = run.snapshot.lock() {
+            snapshot.history_save_failed = true;
+        }
+    }
+    run.finalized.store(true, Ordering::Release);
     clear_active(&scan_id);
 }
 pub fn start_disk_scan(path: Option<String>, refresh: bool) -> Result<DiskScan, String> {
@@ -1899,6 +1922,7 @@ fn start_disk_scan_mode_impl(
             source_scan_id: None,
             scan_method: "full".into(),
             freshness: "updating".into(),
+            history_save_failed: false,
             fallback_reason: None,
         };
         let run = Arc::new(Run {
@@ -2024,17 +2048,23 @@ pub fn get_disk_scan(scan_id: String) -> Result<DiskScan, String> {
         .lock()
         .map_err(|_| "Disk scan unavailable")?
         .clone();
-    if snapshot.status != "running" && !run.finalized.load(Ordering::Relaxed) {
-        let key = cache_key(
-            &snapshot.roots.iter().map(PathBuf::from).collect::<Vec<_>>(),
-            run.allow_protected,
-        );
-        // Returning a terminal status tells Electron it can release the active scan.
-        // Join durable publication first, so an immediate Quit cannot lose this result.
-        finish_run(&key, &run);
-    }
     if snapshot.status == "running" {
         snapshot.elapsed_ms = now_ms().saturating_sub(snapshot.started_at_ms);
+    } else {
+        if !run.finalized.load(Ordering::Acquire) {
+            // Returning a terminal status tells Electron it can release the active scan.
+            // Join publication, then read back the outcome of the attempted save.
+            let key = cache_key(
+                &snapshot.roots.iter().map(PathBuf::from).collect::<Vec<_>>(),
+                run.allow_protected,
+            );
+            finish_run(&key, &run);
+        }
+        snapshot.history_save_failed = run
+            .snapshot
+            .lock()
+            .map_err(|_| "Disk scan unavailable")?
+            .history_save_failed;
     }
     if snapshot.cache_hit {
         snapshot.cache_age_ms = now_ms().saturating_sub(snapshot.updated_at_ms);
@@ -2121,9 +2151,8 @@ pub fn get_disk_scan_comparison_with_baseline(
         net_bytes: 0,
         limited: false,
     };
-    if !matches!(snapshot.status.as_str(), "running" | "complete") {
-        return Ok(result);
-    }
+    // The comparison is between archived endpoints. A failed or stopped new
+    // measurement has no bearing on whether those endpoints are readable.
     let rows = history::records(&key, snapshot.index_policy_version);
     let Some(current_row) = rows.iter().find(|row| row.is_current()) else {
         if baseline_id.is_some() {
@@ -3846,14 +3875,47 @@ mod bulk {
     use super::{InventoryMeta, InventoryNode, BULK_BUFFER_BYTES};
     use std::{
         ffi::OsStr,
-        fs::{File, OpenOptions},
+        fs::File,
         io,
         os::{
-            fd::AsRawFd,
-            unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+            fd::{AsRawFd, FromRawFd},
+            unix::ffi::OsStrExt,
         },
         path::Path,
     };
+    // Each failed Darwin call leaves its descriptor/cursor usable. In particular,
+    // getattrlistbulk advances its cursor only when it returns a positive count;
+    // never replay a successful batch. Bound retries so a signal storm remains a
+    // visible partial scan rather than making traversal unresponsive indefinitely.
+    const INTERRUPTED_RETRIES: usize = 8;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Operation {
+        OpenDirectory,
+        OpenRelative,
+        MetadataOpen,
+        Metadata,
+        FdOpenDirectory,
+        ReadDirectory,
+        BulkRead,
+    }
+    fn retry_interrupted<T>(
+        _operation: Operation,
+        mut call: impl FnMut() -> io::Result<T>,
+    ) -> io::Result<T> {
+        for attempt in 0..=INTERRUPTED_RETRIES {
+            #[cfg(test)]
+            let result = faults::take(_operation).map_or_else(&mut call, Err);
+            #[cfg(not(test))]
+            let result = call();
+            match result {
+                Err(error)
+                    if error.raw_os_error() == Some(libc::EINTR)
+                        && attempt < INTERRUPTED_RETRIES => {}
+                result => return result,
+            }
+        }
+        unreachable!()
+    }
     #[repr(C)]
     struct AttrList {
         bitmapcount: u16,
@@ -3876,12 +3938,21 @@ mod bulk {
     pub(super) fn open_directory(path: &Path, device: Option<u64>) -> io::Result<File> {
         use std::os::unix::fs::MetadataExt;
 
-        // O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY. O_NOFOLLOW and O_NOFOLLOW_ANY are mutually exclusive.
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(0x00100000 | 0x01000000 | 0x20000000)
-            .open(path)?;
-        let metadata = file.metadata()?;
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+        // O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY. O_NOFOLLOW
+        // and O_NOFOLLOW_ANY are mutually exclusive. Use the raw call because
+        // std::OpenOptions retries EINTR internally without a bound.
+        let fd = retry_interrupted(Operation::OpenDirectory, || {
+            let fd = unsafe { libc::open(path.as_ptr(), 0x00100000 | 0x01000000 | 0x20000000) };
+            if fd < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(fd)
+            }
+        })?;
+        let file = unsafe { File::from_raw_fd(fd) };
+        let metadata = retry_interrupted(Operation::Metadata, || file.metadata())?;
         if super::placeholder(&metadata) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -3915,17 +3986,21 @@ mod bulk {
         }
         let name = std::ffi::CString::new(bytes).map_err(|_| invalid())?;
         // O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC: the parent descriptor is trusted.
-        let fd = unsafe { openat(fd, name.as_ptr(), 0x00000100 | 0x00100000 | 0x01000000) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let fd = retry_interrupted(Operation::OpenRelative, || {
+            let child = unsafe { openat(fd, name.as_ptr(), 0x00000100 | 0x00100000 | 0x01000000) };
+            if child < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(child)
+            }
+        })?;
         let file = unsafe { File::from_raw_fd(fd) };
         verify_identity(&file, expected)?;
         Ok(file)
     }
     pub(super) fn verify_identity(file: &File, expected: &InventoryMeta) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
-        let actual = file.metadata()?;
+        let actual = retry_interrupted(Operation::Metadata, || file.metadata())?;
         if !actual.is_dir() || actual.dev() != expected.device || actual.ino() != expected.inode {
             return Err(io::Error::other(
                 "Directory identity changed before traversal",
@@ -3946,12 +4021,19 @@ mod bulk {
             return Err(invalid());
         }
         let name = std::ffi::CString::new(name).map_err(|_| invalid())?;
-        let child = unsafe { openat(fd, name.as_ptr(), 0x00008000 | 0x00200000 | 0x01000000) };
-        if child < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let child = retry_interrupted(Operation::MetadataOpen, || {
+            let child = unsafe { openat(fd, name.as_ptr(), 0x00008000 | 0x00200000 | 0x01000000) };
+            if child < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(child)
+            }
+        })?;
         let file = unsafe { File::from_raw_fd(child) };
-        Ok(InventoryMeta::from_metadata(&file.metadata()?))
+        Ok(InventoryMeta::from_metadata(&retry_interrupted(
+            Operation::Metadata,
+            || file.metadata(),
+        )?))
     }
     // Descriptor-backed fallback for filesystems without getattrlistbulk support.
     // Never reopen through read_dir(path), which would undo O_NOFOLLOW rejection.
@@ -3963,12 +4045,20 @@ mod bulk {
         pub fn from_file(file: File) -> io::Result<Self> {
             use std::os::fd::{FromRawFd, IntoRawFd};
             let fd = file.into_raw_fd();
-            let directory = unsafe { fdopendir(fd) };
-            if directory.is_null() {
-                let error = io::Error::last_os_error();
-                drop(unsafe { File::from_raw_fd(fd) });
-                return Err(error);
-            }
+            let directory = match retry_interrupted(Operation::FdOpenDirectory, || {
+                let directory = unsafe { fdopendir(fd) };
+                if directory.is_null() {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(directory)
+                }
+            }) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    drop(unsafe { File::from_raw_fd(fd) });
+                    return Err(error);
+                }
+            };
             Ok(Self {
                 directory,
                 ended: false,
@@ -3988,19 +4078,32 @@ mod bulk {
                 return None;
             }
             loop {
-                unsafe {
-                    *__error() = 0;
-                }
-                let entry = unsafe { readdir(self.directory) }.cast::<u8>();
-                if entry.is_null() {
-                    self.ended = true;
-                    let error = io::Error::last_os_error();
-                    return if error.raw_os_error() == Some(0) {
-                        None
+                let entry = match retry_interrupted(Operation::ReadDirectory, || {
+                    unsafe {
+                        *__error() = 0;
+                    }
+                    let entry = unsafe { readdir(self.directory) }.cast::<u8>();
+                    if !entry.is_null() {
+                        Ok(Some(entry))
                     } else {
-                        Some(Err(error))
-                    };
-                }
+                        let error = io::Error::last_os_error();
+                        if error.raw_os_error() == Some(0) {
+                            Ok(None)
+                        } else {
+                            Err(error)
+                        }
+                    }
+                }) {
+                    Ok(Some(entry)) => entry,
+                    Ok(None) => {
+                        self.ended = true;
+                        return None;
+                    }
+                    Err(error) => {
+                        self.ended = true;
+                        return Some(Err(error));
+                    }
+                };
                 // Darwin struct dirent: ino64, seekoff64, reclen16, namlen16, type8, name[].
                 let reclen =
                     unsafe { std::ptr::read_unaligned(entry.add(16).cast::<u16>()) } as usize;
@@ -4076,27 +4179,31 @@ mod bulk {
             }
         }
         fn fill(&mut self) -> io::Result<()> {
-            let mut attributes = AttrList {
-                bitmapcount: 5,
-                reserved: 0,
-                common: COMMON,
-                volume: 0,
-                directory: DIR,
-                file: FILE,
-                fork: 0,
-            };
-            let count = unsafe {
-                getattrlistbulk(
-                    self.file.as_raw_fd(),
-                    &mut attributes,
-                    self.buffer.as_mut_ptr().cast(),
-                    self.buffer.len() * 8,
-                    0,
-                )
-            };
-            if count < 0 {
-                return Err(io::Error::last_os_error());
-            }
+            let count = retry_interrupted(Operation::BulkRead, || {
+                let mut attributes = AttrList {
+                    bitmapcount: 5,
+                    reserved: 0,
+                    common: COMMON,
+                    volume: 0,
+                    directory: DIR,
+                    file: FILE,
+                    fork: 0,
+                };
+                let count = unsafe {
+                    getattrlistbulk(
+                        self.file.as_raw_fd(),
+                        &mut attributes,
+                        self.buffer.as_mut_ptr().cast(),
+                        self.buffer.len() * 8,
+                        0,
+                    )
+                };
+                if count < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(count)
+                }
+            })?;
             self.offset = 0;
             self.remaining = count as usize;
             self.ended = count == 0;
@@ -4125,7 +4232,9 @@ mod bulk {
                     "Invalid Darwin directory batch record",
                 )));
             }
-            let result = parse(&available[..length], parent);
+            let result = parse_with_metadata(&available[..length], parent, |name| {
+                metadata_at(self.file.as_raw_fd(), name)
+            });
             self.offset += length;
             self.remaining -= 1;
             Some(result)
@@ -4163,7 +4272,17 @@ mod bulk {
             "Invalid Darwin directory batch attributes",
         )
     }
+    #[cfg(test)]
     fn parse(record: &[u8], parent: &Path) -> io::Result<InventoryNode> {
+        parse_with_metadata(record, parent, |_| {
+            Err(io::Error::from_raw_os_error(libc::EINTR))
+        })
+    }
+    fn parse_with_metadata(
+        record: &[u8],
+        parent: &Path,
+        recover: impl FnOnce(&OsStr) -> io::Result<InventoryMeta>,
+    ) -> io::Result<InventoryNode> {
         let common = read_u32(record, 4).ok_or_else(invalid)?;
         let directory = read_u32(record, 12).ok_or_else(invalid)?;
         let file = read_u32(record, 16).ok_or_else(invalid)?;
@@ -4194,6 +4313,20 @@ mod bulk {
         }
         let path = parent.join(OsStr::from_bytes(name));
         if error != 0 {
+            if error as i32 == libc::EINTR {
+                return Ok(match recover(OsStr::from_bytes(name)) {
+                    Ok(metadata) => InventoryNode {
+                        path,
+                        metadata: Some(metadata),
+                        error: None,
+                    },
+                    Err(error) => InventoryNode {
+                        path,
+                        metadata: None,
+                        error: Some(error.to_string()),
+                    },
+                });
+            }
             return Ok(InventoryNode {
                 path,
                 metadata: None,
@@ -4233,6 +4366,366 @@ mod bulk {
             metadata,
             error: None,
         })
+    }
+    #[cfg(test)]
+    mod faults {
+        use super::Operation;
+        use std::{cell::RefCell, collections::VecDeque, io};
+
+        #[derive(Default)]
+        struct State {
+            pending: VecDeque<(Operation, i32)>,
+            calls: Vec<Operation>,
+        }
+        thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
+        pub(super) struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                STATE.with(|state| *state.borrow_mut() = None);
+            }
+        }
+        pub(super) fn inject(errors: impl IntoIterator<Item = (Operation, i32)>) -> Guard {
+            STATE.with(|state| {
+                *state.borrow_mut() = Some(State {
+                    pending: errors.into_iter().collect(),
+                    calls: Vec::new(),
+                });
+            });
+            Guard
+        }
+        pub(super) fn take(operation: Operation) -> Option<io::Error> {
+            STATE.with(|state| {
+                let mut slot = state.borrow_mut();
+                let state = slot.as_mut()?;
+                state.calls.push(operation);
+                if state
+                    .pending
+                    .front()
+                    .is_some_and(|(next, _)| *next == operation)
+                {
+                    state
+                        .pending
+                        .pop_front()
+                        .map(|(_, error)| io::Error::from_raw_os_error(error))
+                } else {
+                    None
+                }
+            })
+        }
+        pub(super) fn calls(operation: Operation) -> usize {
+            STATE.with(|state| {
+                state.borrow().as_ref().map_or(0, |state| {
+                    state
+                        .calls
+                        .iter()
+                        .filter(|&&call| call == operation)
+                        .count()
+                })
+            })
+        }
+    }
+    #[cfg(test)]
+    mod retry_tests {
+        use super::*;
+        use std::{
+            collections::BTreeSet,
+            fs,
+            path::PathBuf,
+            sync::atomic::{AtomicUsize, Ordering},
+        };
+
+        struct Fixture(PathBuf);
+        impl Fixture {
+            fn new() -> Self {
+                static NEXT: AtomicUsize = AtomicUsize::new(0);
+                let nonce = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let root = std::env::temp_dir().join(format!(
+                    "cublet-eintr-{}-{nonce}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                fs::create_dir(&root).unwrap();
+                // macOS temp_dir commonly starts at /var, an ancestor symlink
+                // which the production O_NOFOLLOW_ANY guard correctly rejects.
+                Self(fs::canonicalize(root).unwrap())
+            }
+            fn reader(&self) -> BulkDirectory {
+                // Force several native batches, independently of the production
+                // buffer size, to exercise failures after an earlier success.
+                BulkDirectory {
+                    file: open_directory(&self.0, None).unwrap(),
+                    buffer: vec![0; 64],
+                    offset: 0,
+                    remaining: 0,
+                    ended: false,
+                }
+            }
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        fn error_record(name: &[u8], error: i32) -> Vec<u8> {
+            let length = (36 + name.len() + 1 + 7) & !7;
+            let mut record = vec![0; length];
+            record[0..4].copy_from_slice(&(length as u32).to_ne_bytes());
+            record[4..8].copy_from_slice(&0xa0000001u32.to_ne_bytes());
+            record[24..28].copy_from_slice(&error.to_ne_bytes());
+            record[28..32].copy_from_slice(&8u32.to_ne_bytes());
+            record[32..36].copy_from_slice(&((name.len() + 1) as u32).to_ne_bytes());
+            record[36..36 + name.len()].copy_from_slice(name);
+            record
+        }
+        fn set_record(reader: &mut BulkDirectory, record: &[u8]) {
+            reader.buffer = record
+                .chunks_exact(8)
+                .map(|bytes| u64::from_ne_bytes(bytes.try_into().unwrap()))
+                .collect();
+            reader.offset = 0;
+            reader.remaining = 1;
+        }
+        fn names(reader: &mut BulkDirectory, parent: &Path) -> Vec<PathBuf> {
+            let mut found = Vec::new();
+            while let Some(node) = reader.next(parent) {
+                found.push(node.unwrap().path);
+            }
+            found
+        }
+        #[test]
+        fn bulk_cursor_retries_initial_and_later_batches_without_replay() {
+            let fixture = Fixture::new();
+            let expected: BTreeSet<_> = (0..24)
+                .map(|n| {
+                    let path = fixture.0.join(format!("entry-{n:02}"));
+                    fs::write(&path, b"data").unwrap();
+                    path
+                })
+                .collect();
+            let mut reader = fixture.reader();
+            let mut found = Vec::new();
+            {
+                let _fault = faults::inject([(Operation::BulkRead, libc::EINTR)]);
+                found.push(reader.next(&fixture.0).unwrap().unwrap().path);
+                assert_eq!(faults::calls(Operation::BulkRead), 2);
+                while reader.remaining > 0 {
+                    found.push(reader.next(&fixture.0).unwrap().unwrap().path);
+                }
+            }
+            assert!(
+                found.len() < expected.len(),
+                "fixture must span native batches"
+            );
+            {
+                let _fault = faults::inject([(Operation::BulkRead, libc::EINTR)]);
+                found.extend(names(&mut reader, &fixture.0));
+                assert!(faults::calls(Operation::BulkRead) >= 3);
+            }
+            assert_eq!(
+                found.len(),
+                expected.len(),
+                "successful batches must not be replayed"
+            );
+            assert_eq!(found.into_iter().collect::<BTreeSet<_>>(), expected);
+        }
+        #[test]
+        fn bulk_retry_exhaustion_and_real_errors_remain_terminal() {
+            let fixture = Fixture::new();
+            for error in [libc::EINTR, libc::EACCES, libc::EIO] {
+                let mut reader = fixture.reader();
+                let attempts = if error == libc::EINTR {
+                    INTERRUPTED_RETRIES + 1
+                } else {
+                    1
+                };
+                let _fault =
+                    faults::inject(std::iter::repeat_n((Operation::BulkRead, error), attempts));
+                assert_eq!(
+                    reader
+                        .next(&fixture.0)
+                        .unwrap()
+                        .err()
+                        .unwrap()
+                        .raw_os_error(),
+                    Some(error)
+                );
+                assert!(reader.next(&fixture.0).is_none());
+                assert_eq!(faults::calls(Operation::BulkRead), attempts);
+            }
+        }
+        #[test]
+        fn portable_cursor_recovers_eintr_and_distinguishes_eof_from_errors() {
+            let fixture = Fixture::new();
+            for name in ["a", "b"] {
+                fs::write(fixture.0.join(name), name).unwrap();
+            }
+            let _fault = faults::inject([
+                (Operation::FdOpenDirectory, libc::EINTR),
+                (Operation::ReadDirectory, libc::EINTR),
+            ]);
+            let mut reader =
+                PortableDirectory::from_file(open_directory(&fixture.0, None).unwrap()).unwrap();
+            let mut found = BTreeSet::new();
+            while let Some(node) = reader.next(&fixture.0) {
+                assert!(found.insert(node.unwrap().path));
+            }
+            assert_eq!(
+                found,
+                BTreeSet::from([fixture.0.join("a"), fixture.0.join("b")])
+            );
+            assert!(reader.next(&fixture.0).is_none());
+            assert_eq!(faults::calls(Operation::FdOpenDirectory), 2);
+            drop(_fault);
+            for error in [libc::EINTR, libc::EACCES] {
+                let mut reader =
+                    PortableDirectory::from_file(open_directory(&fixture.0, None).unwrap())
+                        .unwrap();
+                let attempts = if error == libc::EINTR {
+                    INTERRUPTED_RETRIES + 1
+                } else {
+                    1
+                };
+                let _fault = faults::inject(std::iter::repeat_n(
+                    (Operation::ReadDirectory, error),
+                    attempts,
+                ));
+                assert_eq!(
+                    reader
+                        .next(&fixture.0)
+                        .unwrap()
+                        .err()
+                        .unwrap()
+                        .raw_os_error(),
+                    Some(error)
+                );
+                assert!(reader.next(&fixture.0).is_none());
+                assert_eq!(faults::calls(Operation::ReadDirectory), attempts);
+            }
+        }
+        #[test]
+        fn descriptor_open_and_stat_retry_without_weakening_nofollow_or_identity() {
+            use std::os::unix::fs::symlink;
+            let fixture = Fixture::new();
+            let child = fixture.0.join("child");
+            fs::create_dir(&child).unwrap();
+            symlink(&child, fixture.0.join("link")).unwrap();
+            let expected = InventoryMeta::from_metadata(&fs::symlink_metadata(&child).unwrap());
+            let _fault = faults::inject([
+                (Operation::OpenDirectory, libc::EINTR),
+                (Operation::Metadata, libc::EINTR),
+                (Operation::OpenRelative, libc::EINTR),
+                (Operation::Metadata, libc::EINTR),
+                (Operation::MetadataOpen, libc::EINTR),
+                (Operation::Metadata, libc::EINTR),
+            ]);
+            let parent = open_directory(&fixture.0, Some(expected.device)).unwrap();
+            let opened = open_relative(parent.as_raw_fd(), OsStr::new("child"), &expected).unwrap();
+            assert!(opened.metadata().unwrap().is_dir());
+            let actual = metadata_at(parent.as_raw_fd(), OsStr::new("child")).unwrap();
+            assert_eq!(actual.inode, expected.inode);
+            assert_eq!(faults::calls(Operation::OpenDirectory), 2);
+            assert_eq!(faults::calls(Operation::OpenRelative), 2);
+            assert_eq!(faults::calls(Operation::MetadataOpen), 2);
+            assert_eq!(faults::calls(Operation::Metadata), 6);
+            assert!(open_relative(parent.as_raw_fd(), OsStr::new("link"), &expected).is_err());
+            assert!(open_directory(&fixture.0.join("link"), None).is_err());
+            assert!(
+                metadata_at(parent.as_raw_fd(), OsStr::new("link"))
+                    .unwrap()
+                    .symlink
+            );
+            let mut wrong_device = expected.clone();
+            wrong_device.device ^= 1;
+            assert!(open_relative(parent.as_raw_fd(), OsStr::new("child"), &wrong_device).is_err());
+            assert!(open_directory(&fixture.0, Some(wrong_device.device)).is_err());
+        }
+        #[test]
+        fn per_entry_eintr_recovers_metadata_from_original_parent_after_rename() {
+            let fixture = Fixture::new();
+            let original = fixture.0.join("original");
+            fs::create_dir(&original).unwrap();
+            fs::write(original.join("child"), b"original").unwrap();
+            let expected = fs::symlink_metadata(original.join("child")).unwrap();
+            let mut reader = BulkDirectory {
+                file: open_directory(&original, None).unwrap(),
+                buffer: Vec::new(),
+                offset: 0,
+                remaining: 0,
+                ended: false,
+            };
+            fs::rename(&original, fixture.0.join("renamed")).unwrap();
+            fs::create_dir(&original).unwrap();
+            fs::write(
+                original.join("child"),
+                b"replacement has different metadata",
+            )
+            .unwrap();
+            set_record(&mut reader, &error_record(b"child", libc::EINTR));
+            let _fault = faults::inject([
+                (Operation::MetadataOpen, libc::EINTR),
+                (Operation::Metadata, libc::EINTR),
+            ]);
+            let node = reader.next(&original).unwrap().unwrap();
+            let metadata = node.metadata.unwrap();
+            assert!(node.error.is_none());
+            assert_eq!(
+                metadata.inode,
+                InventoryMeta::from_metadata(&expected).inode
+            );
+            assert_eq!(metadata.logical, expected.len());
+            assert_eq!(
+                reader.remaining, 0,
+                "the error record is consumed exactly once"
+            );
+            assert_eq!(faults::calls(Operation::MetadataOpen), 2);
+        }
+        #[test]
+        fn per_entry_recovery_keeps_real_failures_and_sustained_eintr_visible() {
+            let fixture = Fixture::new();
+            let mut reader = fixture.reader();
+            for error in [libc::EACCES, libc::EIO] {
+                set_record(&mut reader, &error_record(b"missing", error));
+                let _fault = faults::inject([]);
+                let node = reader.next(&fixture.0).unwrap().unwrap();
+                assert!(node.metadata.is_none());
+                assert_eq!(
+                    node.error.unwrap(),
+                    io::Error::from_raw_os_error(error).to_string()
+                );
+                assert_eq!(
+                    faults::calls(Operation::MetadataOpen),
+                    0,
+                    "real entry errors are not retried"
+                );
+            }
+            fs::write(fixture.0.join("child"), b"data").unwrap();
+            set_record(&mut reader, &error_record(b"child", libc::EINTR));
+            let _fault = faults::inject(std::iter::repeat_n(
+                (Operation::MetadataOpen, libc::EINTR),
+                INTERRUPTED_RETRIES + 1,
+            ));
+            let node = reader.next(&fixture.0).unwrap().unwrap();
+            assert!(node.metadata.is_none());
+            assert_eq!(
+                node.error.unwrap(),
+                io::Error::from_raw_os_error(libc::EINTR).to_string()
+            );
+            assert_eq!(
+                faults::calls(Operation::MetadataOpen),
+                INTERRUPTED_RETRIES + 1
+            );
+            drop(_fault);
+            set_record(&mut reader, &error_record(b"missing", libc::EINTR));
+            let node = reader.next(&fixture.0).unwrap().unwrap();
+            assert!(node.metadata.is_none());
+            assert_eq!(
+                node.error.unwrap(),
+                io::Error::from_raw_os_error(libc::ENOENT).to_string()
+            );
+        }
     }
     #[cfg(test)]
     mod parser_tests {
@@ -5392,6 +5885,7 @@ mod tests {
                 source_scan_id: None,
                 scan_method: "full".into(),
                 freshness: "updating".into(),
+                history_save_failed: false,
                 fallback_reason: None,
             }),
             cancelled: AtomicBool::new(false),
@@ -6601,12 +7095,10 @@ mod tests {
             "scanning"
         );
         restored.snapshot.lock().unwrap().status = "cancelled".into();
-        assert_eq!(
-            get_disk_scan_comparison(second_id.clone(), None)
-                .unwrap()
-                .status,
-            "unavailable"
-        );
+        let after_stop = get_disk_scan_comparison(second_id.clone(), None).unwrap();
+        assert_eq!(after_stop.status, "ready");
+        assert_eq!(after_stop.current_id, from_archives.current_id);
+        assert_eq!(after_stop.baseline_id, from_archives.baseline_id);
         restored.snapshot.lock().unwrap().status = "complete".into();
         restored.snapshot.lock().unwrap().freshness = "verified".into();
         fs::remove_file(&previous).unwrap();
@@ -6779,6 +7271,142 @@ mod tests {
             .timestamp_millis() as u64
     }
     #[test]
+    fn optional_index_and_checkpoint_pressure_keep_complete_history() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        let root = fixture();
+        let saved = registry().lock().unwrap().active.clone();
+        let (_, previous_id) = publish_history_fixture(&root, "pressure-previous", 100);
+        let (_, current_id) = publish_history_fixture(&root, "pressure-current", 200);
+        let key = cache_key(std::slice::from_ref(&root), true);
+        let current = cache_file(&key).unwrap();
+        let previous = previous_cache_file(&key).unwrap();
+        let directory = current.parent().unwrap();
+        {
+            let _storage = cache_storage_lock().lock().unwrap();
+            let full_budget = configured_cache_limit() * MIB - CATALOG_RESERVE_BYTES;
+            assert!(reserve_incremental_bytes(
+                &current.with_extension("index.sqlite"),
+                full_budget
+            )
+            .is_err());
+            let checkpoint = checkpoint_file(&key).unwrap();
+            assert!(trim_cache_directory_with_policy(
+                directory,
+                Some(&checkpoint),
+                0,
+                usize::MAX,
+                false,
+                &[]
+            )
+            .is_err());
+            assert_eq!(
+                read_cache_at(&current, &key, false)
+                    .unwrap()
+                    .snapshot
+                    .scan_id,
+                current_id
+            );
+            assert_eq!(
+                read_cache_at(&previous, &key, false)
+                    .unwrap()
+                    .snapshot
+                    .scan_id,
+                previous_id
+            );
+        }
+        history_fixture_cleanup(&root, saved);
+    }
+
+    #[test]
+    fn failed_history_publication_reports_unsaved_and_retry_rotates_old_endpoint() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        let root = fixture();
+        let saved = registry().lock().unwrap().active.clone();
+        let (_, original_id) = publish_history_fixture(&root, "write-original", 100);
+        let original = list_disk_scan_history(original_id.clone())
+            .unwrap()
+            .current
+            .unwrap();
+        let key = cache_key(std::slice::from_ref(&root), true);
+        let previous = previous_cache_file(&key).unwrap();
+        // A directory here forces the old-endpoint archival rename to fail.
+        fs::create_dir(&previous).unwrap();
+        fs::write(root.join("new-data"), [1; 4096]).unwrap();
+        let failed = fixture_run(&root);
+        let failed_id = unique_id(&failed, "write-failed");
+        scan_roots(failed.clone(), vec![root.clone()]);
+        {
+            let mut reg = registry().lock().unwrap();
+            reg.active = Some(failed_id.clone());
+            reg.runs.insert(failed_id.clone(), failed);
+        }
+        let measured = get_disk_scan(failed_id.clone()).unwrap();
+        assert_eq!(measured.status, "complete");
+        assert_eq!(measured.freshness, "verified");
+        assert_eq!(
+            serde_json::to_value(measured).unwrap()["historySaveFailed"],
+            true
+        );
+        assert_eq!(
+            list_disk_scan_history(failed_id).unwrap().current,
+            Some(original.clone())
+        );
+        assert_eq!(read_cache(&key).unwrap().snapshot.scan_id, original_id);
+
+        fs::remove_dir(&previous).unwrap();
+        let (_, retry_id) = publish_history_fixture(&root, "write-retry", 300);
+        assert!(!get_disk_scan(retry_id.clone()).unwrap().history_save_failed);
+        let history = list_disk_scan_history(retry_id.clone()).unwrap();
+        assert_ne!(history.current, Some(original.clone()));
+        assert!(history.snapshots.contains(&original));
+        assert_eq!(
+            get_disk_scan_comparison(retry_id, None)
+                .unwrap()
+                .growth_bytes,
+            allocated(&fs::metadata(root.join("new-data")).unwrap())
+        );
+        history_fixture_cleanup(&root, saved);
+    }
+
+    #[test]
+    fn stopped_and_failed_refresh_can_still_compare_the_saved_pair() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        let root = fixture();
+        let saved = registry().lock().unwrap().active.clone();
+        let (_, first_id) = publish_history_fixture(&root, "saved-start", 100);
+        let baseline = list_disk_scan_history(first_id).unwrap().current.unwrap();
+        fs::write(root.join("growth-data"), [1; 4096]).unwrap();
+        let (_, second_id) = publish_history_fixture(&root, "saved-end", 200);
+        let pair =
+            get_disk_scan_comparison_with_baseline(second_id, None, Some(baseline.id.clone()))
+                .unwrap();
+        assert_eq!(pair.status, "ready");
+        for status in ["cancelled", "failed"] {
+            let attempt = fixture_run(&root);
+            let attempt_id = unique_id(&attempt, status);
+            {
+                let mut snapshot = attempt.snapshot.lock().unwrap();
+                snapshot.status = status.into();
+                snapshot.freshness = "partial".into();
+            }
+            attempt.finalized.store(true, Ordering::Release);
+            registry()
+                .lock()
+                .unwrap()
+                .runs
+                .insert(attempt_id.clone(), attempt);
+            let comparison =
+                get_disk_scan_comparison_with_baseline(attempt_id, None, Some(baseline.id.clone()))
+                    .unwrap();
+            assert_eq!(comparison.status, "ready");
+            assert_eq!(comparison.current_id, pair.current_id);
+            assert_eq!(comparison.baseline_id, pair.baseline_id);
+            assert_eq!(comparison.growth_bytes, pair.growth_bytes);
+            assert!(!comparison.refreshing);
+        }
+        history_fixture_cleanup(&root, saved);
+    }
+    #[test]
     fn history_keeps_cross_day_endpoints_instead_of_summing_intermediate_growth() {
         let _guard = CACHE_TEST_LOCK.lock().unwrap();
         let root = fixture();
@@ -6901,7 +7529,7 @@ mod tests {
             get_disk_scan_comparison_with_baseline(running_id, None, Some(baseline.id))
                 .unwrap()
                 .status,
-            "unavailable"
+            "ready"
         );
         history_fixture_cleanup(&root, saved);
     }
@@ -7123,7 +7751,7 @@ mod tests {
             get_disk_scan_comparison_with_baseline(latest, None, Some(baseline))
                 .unwrap()
                 .status,
-            "unavailable"
+            "ready"
         );
         history_fixture_cleanup(&root, saved);
     }

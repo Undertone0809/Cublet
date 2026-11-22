@@ -1021,7 +1021,7 @@ export default function MacApp() {
         {(partial || showingPrevious) && scan ? (
           <span>{freshness === "partial" ? tr("部分结果", "Partial") : running || freshness === "updating" ? tr("正在更新", "Updating") : showingPrevious ? tr("上次结果", "Previous scan") : tr("部分结果", "Partial")}</span>
         ) : null}
-        {needsRetry && <button disabled={busy} onClick={() => void refresh(currentPath, true, hasProtectedAccess, false)}>{tr("重试扫描", "Retry scan")}</button>}
+        {needsRetry && !(page === "explorer" && explorerMetric === "growth") && <button disabled={busy} onClick={() => void refresh(currentPath, true, hasProtectedAccess, false)}>{tr("重试扫描", "Retry scan")}</button>}
         <button
           aria-label={tr("扫描详情", "Scan details")}
           title={tr("扫描详情", "Scan details")}
@@ -1293,6 +1293,17 @@ export default function MacApp() {
                 ) : explorerMetric === "growth" ? (
                   <Suspense fallback={<div className="loading-state" role="status"><LoaderCircle className="spin" /><span>{tr("正在读取扫描对比…", "Loading scan comparison…")}</span></div>}>
                     <ScanComparison onTrashed={handleTrashed} onPermissionRequired={() => { setPermissionOpen(true); void checkPermissions(); }} scan={sourceScan ?? scan} preview={scan} currentPath={currentPath} locale={locale} height={treemapHeight} query={query}
+                      onRetryScan={() => {
+                        if (!sourceScan || busy || activeId || openingPath || checkingPermission) return;
+                        if (sourceProtection.current && !hasProtectedAccess) {
+                          setPermissionOpen(true); void checkPermissions(); return;
+                        }
+                        // Growth compares the source scope even when its historical map is drilled.
+                        const retryPath = sourceScan.roots.length === 1 ? sourceScan.roots[0] : undefined;
+                        void refresh(retryPath, true, sourceProtection.current, false);
+                      }}
+                      retryScanDisabled={busy || !!activeId || !!openingPath || checkingPermission}
+                      retryScanDisabledReason={activeId ? tr("请等待当前扫描完成，或先停止扫描。", "Wait for the active scan to finish, or stop it first.") : busy || openingPath ? tr("正在切换扫描范围。", "The scan scope is changing.") : checkingPermission ? tr("正在检查访问权限。", "Checking disk access.") : sourceProtection.current && !hasProtectedAccess ? tr("请先恢复此范围的访问权限。", "Restore disk access to retry this scope.") : undefined}
                       onBrowseCurrent={(path) => { setExplorerMetric("allocation"); if (path) { setQuery(""); setTab("folders"); void enterDirectory(path); } }}
                       onReveal={(path) => void reveal(path)} />
                   </Suspense>

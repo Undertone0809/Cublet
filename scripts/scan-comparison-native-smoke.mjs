@@ -2,9 +2,9 @@
 // Uses real Electron IPC, Rust traversal and a private cache; changes only its own fixture.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -25,6 +25,9 @@ const home = await realpath(userInfo().homedir);
 const applications = join(home, 'Applications');
 assert((await lstat(applications)).isDirectory(), 'Create ~/Applications before running this test');
 const root = await mkdtemp(join(await realpath(tmpdir()), 'msm-comparison-smoke-'));
+const evidenceRoot = resolve(process.env.MSM_COMPARISON_EVIDENCE_ROOT ?? root);
+await mkdir(evidenceRoot, { recursive: true });
+const screenshots = [];
 const fixture = await mkdtemp(join(applications, 'msm-comparison-smoke-'));
 const growing = join(fixture, 'Growing');
 const shrinking = join(fixture, 'Shrinking');
@@ -38,10 +41,16 @@ delete env.ELECTRON_START_URL;
 delete env.ELECTRON_REMOTE_DEBUGGING_PORT;
 delete env.ELECTRON_RUN_AS_NODE;
 const MiB = 1024 * 1024;
+const historyOnly = process.env.MSM_COMPARISON_HISTORY_ONLY === '1';
+const independentMeasurements = [];
 const errors = [];
 let app;
 let page;
 let step = 'creating allocated native fixtures';
+let blockedPrevious;
+let backedUpPrevious;
+let previousMoved = false;
+let outcome = "failed";
 
 async function allocate(path, mebibytes, append = false) {
   const file = await open(path, append ? 'a' : 'w');
@@ -136,7 +145,44 @@ async function drillToGrowing() {
   await location.filter({ hasText: /^Growing$/ }).waitFor();
 }
 async function screenshot(name) {
-  await page.screenshot({ path: join(root, `${name}.png`), fullPage: true });
+  const path = join(evidenceRoot, `${String(screenshots.length + 1).padStart(2, '0')}-${name}.png`);
+  await page.screenshot({ path, fullPage: true });
+  screenshots.push({ path, name, action: step, evidenceMode: 'development Electron with native IPC and isolated allocated fixture',
+    viewport: await page.evaluate(() => ({ width: innerWidth, height: innerHeight, theme: document.documentElement.dataset.theme })) });
+}
+async function assertSavedEndpoint(snapshot) {
+  await page.waitForFunction(expected => document.querySelector('[data-testid="growth-saved-endpoint"] time')?.getAttribute('datetime') === expected,
+    new Date(snapshot.updatedAtMs).toISOString());
+  assert.match(await page.getByTestId('growth-saved-endpoint').innerText(), /Latest saved scan/);
+}
+async function setAppearance(theme) {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('group', { name: 'Appearance', exact: true }).getByRole('button', { name: theme === 'dark' ? 'Dark' : 'Light', exact: true }).click();
+  await page.getByRole('button', { name: 'Space explorer', exact: true }).click();
+  await drillToGrowing();
+  await page.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
+}
+async function windowSize(width, height) {
+  await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setBounds(size), { width, height });
+  await page.waitForFunction(size => innerWidth === size.width && innerHeight === size.height, { width, height });
+}
+async function waitForTerminal(scanId) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const scan = await invoke('get_disk_scan', { scanId });
+    if (scan.status !== 'running') return scan;
+    await delay(80);
+  }
+  throw new Error('The native scan did not settle within two minutes');
+}
+async function waitForScanStart(after) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const starts = await app.evaluate(() => globalThis.__msmScanStarts);
+    if (starts.length > after) return starts.at(-1);
+    await delay(20);
+  }
+  throw new Error('The UI did not start a native scan');
 }
 
 try {
@@ -156,9 +202,13 @@ try {
   await writeFile(bootstrap, `
     const { app, shell, ipcMain } = require('electron');
     globalThis.__msmComparisonEvidence = [];
+    globalThis.__msmScanStarts = [];
     const registerHandle = ipcMain.handle.bind(ipcMain);
     ipcMain.handle = (channel, handler) => registerHandle(channel, async (event, request) => {
       const result = await handler(event, request);
+      if (channel === 'core:invoke' && request?.method === 'start_disk_scan') {
+        globalThis.__msmScanStarts.push({ params: request.params, scanId: result?.scanId });
+      }
       if (channel === 'core:invoke' && request?.method === 'get_disk_scan_comparison' && result?.refreshing) {
         globalThis.__msmComparisonEvidence.push({ baselineId: result.baselineId, currentId: result.currentId });
       }
@@ -171,7 +221,7 @@ try {
     require(${JSON.stringify(join(project, 'electron/main.cjs'))});
   `);
   await allocate(growthFile, 1);
-  await allocate(reductionFile, 81);
+  await allocate(reductionFile, historyOnly ? 3 : 81);
   const oldGrowth = await allocated(growthFile);
   const oldReduction = await allocated(reductionFile);
   const baselineGrowingAllocated = await growingAllocated();
@@ -184,18 +234,20 @@ try {
   assert.equal((await comparison(baseline)).status, 'no-baseline');
   await clickGrowth();
   await page.getByText('Earliest saved record pinned; complete another scan to compare', { exact: true }).waitFor();
+  await assertSavedEndpoint((await historyFor(baseline)).current);
   await screenshot('first-scan');
   await page.getByRole('button', { name: 'Current usage', exact: true }).click();
 
   step = 'measuring independent growth and reduction';
-  await allocate(growthFile, 100, true);
+  const appendedMiB = historyOnly ? 4 : 100;
+  await allocate(growthFile, appendedMiB, true);
   const file = await open(reductionFile, 'r+');
   try { await file.truncate(MiB); await file.sync(); } finally { await file.close(); }
   const expectedGrowth = await allocated(growthFile) - oldGrowth;
   const expectedReduction = oldReduction - await allocated(reductionFile);
   // APFS can reserve more blocks than the append's logical length. Measure the
   // actual filesystem allocation; do not confuse a 100 MiB write with its bytes.
-  assert.equal((await lstat(growthFile)).size, 101 * MiB);
+  assert.equal((await lstat(growthFile)).size, (1 + appendedMiB) * MiB);
   assert.equal((await lstat(reductionFile)).size, MiB);
   assert(expectedGrowth > 0 && expectedReduction > 0);
   const growthText = formatBytes(expectedGrowth);
@@ -220,6 +272,16 @@ try {
   const firstSaved = firstHistory.snapshots.find(snapshot => snapshot.startedAtMs === baseline.startedAtMs);
   assert(firstSaved, 'The first completed snapshot must remain available as an explicit baseline');
   await chooseBaseline(`snapshot:${firstSaved.id}`, firstHistory);
+  await assertSavedEndpoint(firstHistory.current);
+  await baselineControl().click();
+  await page.getByText('Historical baselines', { exact: true }).waitFor();
+  await page.locator('.mova-select-popup[data-open]').evaluate(async element => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await Promise.all(element.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {})));
+  });
+  await screenshot('historical-baseline-menu');
+  await page.keyboard.press('Escape');
+  await page.getByRole('listbox').waitFor({ state: 'hidden' });
   await waitForGrowth(expectedGrowth);
   assert.equal(await changes.getByRole('button', { name: 'Reduction', exact: true }).count(), 0);
   assert.equal(await changes.getByRole('group', { name: 'Change direction' }).count(), 0);
@@ -240,6 +302,8 @@ try {
   assert(await changes.getByRole('button', { name: 'Comparison details', exact: true }).evaluate(element => element === document.activeElement), 'Closing the info dialog must restore its trigger focus');
   await screenshot('growth-overview');
 
+  let cumulative = await comparison(current, growing, firstSaved.id);
+  if (!historyOnly) {
   step = 'drilling the growth map and inspecting its keyboard tooltip';
   // Stable native treemap directory attributes are shared with Current usage.
   const tile = path => page.locator(`[data-directory-tile=${JSON.stringify(path)}]`).getByRole('button');
@@ -338,9 +402,9 @@ try {
   let lastTinyGrowth = 0;
   let previousEndpoint;
   let latestHistory;
-  let cumulative;
   let observedPendingPair = false;
   let observedNativeRunningPair = false;
+  let capturedProgress = false;
   const completedIds = new Set([baseline.scanId, current.scanId]);
   for (let round = 0; round < 4; round += 1) {
     // A transient file is observed by one scan, then removed. Endpoint comparison
@@ -370,6 +434,17 @@ try {
     // Keep saved time labels distinct even on a very fast local filesystem.
     await delay(1050);
     await page.getByRole('button', { name: 'Rescan', exact: true }).click();
+    if (!capturedProgress) {
+      const updating = changes.locator('.comparison-partial').filter({ hasText: /^Updating$/ });
+      try {
+        await updating.waitFor({ timeout: 1500 });
+        await assertSavedEndpoint((await historyFor(oldEndpoint)).current);
+        await screenshot('refresh-retains-saved-comparison');
+        capturedProgress = true;
+      } catch (error) {
+        if (!String(error).includes('Timeout')) throw error;
+      }
+    }
     current = await waitForCached(oldEndpoint.scanId);
     completedIds.add(current.scanId);
     const pending = await page.evaluate(() => {
@@ -444,6 +519,98 @@ try {
   await drillToGrowing();
   await waitForGrowth(cumulative.growthBytes);
 
+  }
+
+  if (historyOnly) {
+    step = 'archiving the chosen baseline before obstructing only the adjacent history path';
+    const priorId = current.scanId;
+    await page.getByRole('button', { name: 'Rescan', exact: true }).click();
+    current = await waitForCached(priorId);
+    const history = await historyFor(current);
+    assert(history.snapshots.some(snapshot => snapshot.id === firstSaved.id));
+    cumulative = await comparison(current, growing, firstSaved.id);
+    assert.equal(cumulative.status, 'ready');
+    await assertSavedEndpoint(history.current);
+    await drillToGrowing();
+    await waitForGrowth(cumulative.growthBytes);
+  }
+
+  step = 'retaining the saved endpoint after a real history publication failure';
+  const beforeFailedAllocation = await growingAllocated();
+  const durableHistory = await historyFor(current);
+  const durablePair = await comparison(current, growing, firstSaved.id);
+  const cacheDirectory = join(settingsFolder, 'disk-scans');
+  for (const name of await readdir(cacheDirectory)) {
+    if (!name.endsWith('.json') || name.endsWith('.previous.json') || name.endsWith('.partial.json')) continue;
+    const candidate = join(cacheDirectory, name);
+    const value = JSON.parse(await readFile(candidate, 'utf8'));
+    if (value.snapshot?.scanId !== current.scanId) continue;
+    blockedPrevious = candidate.slice(0, -5) + '.previous.json';
+    break;
+  }
+  assert(blockedPrevious, 'Locate only this isolated scope cache by its exact scan ID');
+  backedUpPrevious = blockedPrevious + '.fixture-backup';
+  await rename(blockedPrevious, backedUpPrevious);
+  previousMoved = true;
+  await mkdir(blockedPrevious);
+  let startsBefore = await app.evaluate(() => globalThis.__msmScanStarts.length);
+  await page.getByRole('button', { name: 'Rescan', exact: true }).click();
+  const failedStart = await waitForScanStart(startsBefore);
+  const failed = await waitForTerminal(failedStart.scanId);
+  const afterFailedAllocation = await growingAllocated();
+  independentMeasurements.push({ stage: 'history publication failure', before: beforeFailedAllocation, after: afterFailedAllocation });
+  assert.equal(afterFailedAllocation, beforeFailedAllocation, 'Independent allocated bytes must stay fixed across the failed publication fixture');
+  assert.equal(failed.status, 'complete', 'This is a completed measurement, not an interrupted scan');
+  assert.equal(failed.historySaveFailed, true, 'A real archive-rename failure must report an unsaved measurement');
+  assert.deepEqual(failed.roots, current.roots);
+  assert.deepEqual((await historyFor(failed)).current, durableHistory.current, 'Failed publication preserves the exact durable endpoint');
+  assert.deepEqual(await comparison(failed, growing, firstSaved.id), durablePair, 'Failed publication continues the complete saved comparison');
+  await page.getByTestId('growth-scan-notice').filter({ hasText: 'Scan completed, but history could not be saved.' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Retry scan', exact: true }).count(), 1, 'Growth exposes one recovery action without a duplicate footer retry');
+  await assertSavedEndpoint(durableHistory.current);
+  await drillToGrowing();
+  await waitForGrowth(cumulative.growthBytes);
+  await windowSize(900, 620);
+  await setAppearance('light');
+  await screenshot('history-save-failed-compact-light');
+  await setAppearance('dark');
+  await screenshot('history-save-failed-compact-dark');
+  await windowSize(1180, 780);
+  await screenshot('history-save-failed-regular-dark');
+  await setAppearance('light');
+  await screenshot('history-save-failed-regular-light');
+
+  step = 'retrying the same source scope after restoring history storage';
+  await rm(blockedPrevious, { recursive: true });
+  await rename(backedUpPrevious, blockedPrevious);
+  previousMoved = false;
+  blockedPrevious = undefined;
+  backedUpPrevious = undefined;
+  startsBefore = await app.evaluate(() => globalThis.__msmScanStarts.length);
+  await page.getByTestId('growth-retry-scan').click();
+  const retryStart = await waitForScanStart(startsBefore);
+  assert.equal(retryStart.params.path, applications, 'Retry from a historical drill must scan the source scope rather than the drilled directory');
+  assert.equal(retryStart.params.refresh, true);
+  assert.equal(retryStart.params.allowProtected, failedStart.params.allowProtected, 'Retry must preserve the exact protection scope');
+  const beforeRetryAllocation = await growingAllocated();
+  current = await waitForTerminal(retryStart.scanId);
+  const afterRetryAllocation = await growingAllocated();
+  independentMeasurements.push({ stage: 'same-scope recovery', before: beforeRetryAllocation, after: afterRetryAllocation });
+  assert.equal(afterRetryAllocation, beforeRetryAllocation, 'Independent allocated bytes must stay fixed across the retry fixture');
+  assert.equal(current.status, 'complete');
+  assert.equal(current.historySaveFailed, undefined, 'Successful publication clears the write-failure outcome');
+  assert.notEqual(current.scanId, failed.scanId);
+  const recoveredHistory = await historyFor(current);
+  assert.notEqual(recoveredHistory.current.id, durableHistory.current.id);
+  assert.equal(recoveredHistory.current.startedAtMs, current.startedAtMs);
+  assert(recoveredHistory.snapshots.some(snapshot => snapshot.id === durableHistory.current.id), 'The previous endpoint becomes a historical baseline after recovery');
+  assert(recoveredHistory.snapshots.some(snapshot => snapshot.id === firstSaved.id), 'Recovery retains the chosen older baseline');
+  await page.getByTestId('growth-scan-notice').waitFor({ state: 'hidden' });
+  await assertSavedEndpoint(recoveredHistory.current);
+  await drillToGrowing();
+  await waitForGrowth(cumulative.growthBytes);
+  await screenshot('history-save-recovered');
+
   step = 'reopening the selected older baseline after a full app restart';
   const finalExpected = await comparison(current, growing, firstSaved.id);
   await app.close();
@@ -460,17 +627,29 @@ try {
   await waitForGrowth(cumulative.growthBytes);
   await screenshot('growth-restarted');
   assert.deepEqual(errors, [], 'The real renderer must not produce page errors');
-  console.log('PASS Native growth-only canvas, independent allocated growth/reduction from +100/-80 MiB logical writes, shared selection actions, real Finder paths (shell captured), close/Escape focus, folder double-click, on-demand info, history navigation, six same-day scans, explicit/previous/day baselines, transient-file exclusion, running endpoint stability, scope/metric persistence and persisted comparison after restart');
-  console.log(`Native smoke artifacts: ${root}`);
+  outcome = 'passed';
+  console.log(historyOnly ? 'PASS Focused native saved endpoint, historical baseline menu, real history-save failure, same-scope retry, compact/regular light/dark recovery and persisted comparison after restart' : 'PASS Native saved endpoint, historical baseline menu, real history-save failure and same-scope retry, compact/regular light/dark recovery, growth-only canvas, independent allocated growth/reduction from +100/-80 MiB logical writes, shared selection actions, real Finder paths (shell captured), close/Escape focus, folder double-click, on-demand info, history navigation, six same-day scans, explicit/previous/day baselines, transient-file exclusion, running endpoint stability, scope/metric persistence and persisted comparison after restart');
+  console.log(`Native smoke artifacts: ${evidenceRoot}`);
 } catch (error) {
   await screenshot('failure').catch(() => {});
   const alerts = await page?.getByRole('alert').allTextContents().catch(() => []);
   if (alerts?.length) console.error(alerts.join('\n'));
-  console.error(`Native smoke artifacts: ${root}`);
+  console.error(`Native smoke artifacts: ${evidenceRoot}`);
   throw new Error(`Scan comparison native smoke failed while ${step}`, { cause: error });
 } finally {
   await app?.close();
+  if (previousMoved && blockedPrevious && backedUpPrevious) {
+    await rm(blockedPrevious, { recursive: true, force: true });
+    await rename(backedUpPrevious, blockedPrevious);
+  }
   await rm(fixture, { recursive: true, force: true });
+  await writeFile(join(evidenceRoot, 'manifest.json'), JSON.stringify({
+    evidenceMode: 'development Electron native IPC; isolated synthetic filesystem and cache; renderer screenshots do not establish native chrome',
+    version: JSON.parse(await readFile(join(project, 'package.json'), 'utf8')).version,
+    sourceRevision: spawnSync('git', ['rev-parse', 'HEAD'], { cwd: project, encoding: 'utf8' }).stdout.trim(),
+    coreSHA256: createHash('sha256').update(await readFile(core)).digest('hex'),
+    outcome, historyOnly, independentMeasurements, lastStep: step, screenshots,
+  }, null, 2));
   // Preserve temporary screenshots and isolated cache for diagnosis; no fixture
   // data remains in the user's Applications directory.
 }

@@ -430,6 +430,40 @@ pub(super) fn select(key: &str, policy: u32, id: &str) {
     }
     save(&directory, &mut state);
 }
+
+/// Preserve both comparison choices while admitting a successor. Callers
+/// hold the storage lock through publication so these files cannot rotate.
+pub(super) fn publication_baselines(key: &str, policy: u32) -> Vec<PathBuf> {
+    let Some(directory) = cache_directory() else {
+        return Vec::new();
+    };
+    let Ok(mut state) = state().lock() else {
+        return Vec::new();
+    };
+    let catalog = sync(&directory, &mut state);
+    let scope = scope_id(key, policy);
+    let selected = catalog
+        .selections
+        .iter()
+        .find(|entry| entry.scope_id == scope);
+    let mut older = catalog
+        .records
+        .iter()
+        .filter(|row| row.key == key && row.policy == policy && !row.is_current());
+    let mut protected: Vec<_> = older
+        .clone()
+        .next()
+        .and_then(Record::path)
+        .into_iter()
+        .collect();
+    if let Some(path) = selected
+        .and_then(|entry| older.find(|row| row.summary.id == entry.id))
+        .and_then(Record::path)
+    {
+        protected.push(path);
+    }
+    protected
+}
 // Before adjacent rotation, retain the outgoing previous generation under its
 // stable ID. The hard link shares the immutable inode until previous is replaced.
 pub(super) fn archive_previous(key: &str, write_id: u64) -> bool {

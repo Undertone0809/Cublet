@@ -19,12 +19,15 @@ export type ScanComparisonProps = {
   query?: string;
   preview?: DiskScan | null;
   onBrowseCurrent: (path?: string) => void;
+  onRetryScan: () => void;
+  retryScanDisabled?: boolean;
+  retryScanDisabledReason?: string;
   onReveal: (path: string) => void;
   onTrashed: (path: string, resolvedPath?: string, result?: import("../lib/disk-api").EntryTrashResult) => void;
   onPermissionRequired: () => void;
 };
 
-export function ScanComparison({ scan, currentPath, locale, height, query = "", preview, onBrowseCurrent, onReveal, onTrashed, onPermissionRequired }: ScanComparisonProps) {
+export function ScanComparison({ scan, currentPath, locale, height, query = "", preview, onBrowseCurrent, onRetryScan, retryScanDisabled = false, retryScanDisabledReason, onReveal, onTrashed, onPermissionRequired }: ScanComparisonProps) {
   const tr = (zh: string, en: string) => locale === "zh" ? zh : en;
   const sourceScope = JSON.stringify(scan?.sourceRoots ?? scan?.roots ?? []);
   const settledVersion = scan?.status === "running" ? 0 : scan?.updatedAtMs;
@@ -118,6 +121,15 @@ export function ScanComparison({ scan, currentPath, locale, height, query = "", 
 
   const ready = data?.status === "ready";
   const scanning = scan?.status === "running" || data?.status === "scanning" || !!data?.refreshing;
+  const scanNotice = scan && scan.status !== "running" ? scan.historySaveFailed
+    ? tr("扫描已完成，但未能保存历史记录。", "Scan completed, but history could not be saved.")
+    : scan.status === "cancelled"
+    ? tr("扫描已停止，未保存新的历史记录。", "Scan stopped; no new history was saved.")
+    : scan.status === "failed"
+    ? tr("扫描失败，未保存新的历史记录。", "Scan failed; no new history was saved.")
+    : scan.freshness === "partial" || scan.freshness === "updating"
+    ? tr("扫描未完成，未保存新的历史记录。", "Scan incomplete; no new history was saved.")
+    : undefined : undefined;
   const model = useMemo(() => data?.status === "ready"
     ? comparisonTreemap(data, "growth", path, tr("其他增长", "Other growth")) : undefined, [data, path, locale]);
   const selectedId = selection?.key === identity ? selection.id : undefined;
@@ -218,12 +230,22 @@ export function ScanComparison({ scan, currentPath, locale, height, query = "", 
         {baselineUnavailable && <option value="unavailable" disabled>{tr("基准不可用 · 请重选", "Baseline unavailable · choose again")}</option>}
         <option value="day">{baseline?.current && localDayKey(baseline.current.updatedAtMs) !== localDayKey(Date.now()) ? tr("扫描当日开始", "Start of scan day") : tr("今天开始", "Start of today")}</option>
         <option value="previous">{tr("上次扫描", "Previous scan")}</option>
-        {!!catalogData?.snapshots.length && <optgroup label={tr("已保存扫描", "Saved scans")}>
+        {!!catalogData?.snapshots.length && <optgroup label={tr("历史基准", "Historical baselines")}>
           {catalogData.snapshots.map(item => <option key={item.id} value={`snapshot:${item.id}`}>{snapshotLabel(item.updatedAtMs)}</option>)}
         </optgroup>}
       </NativeSelect>
+      <span className="comparison-saved-endpoint" data-testid="growth-saved-endpoint" title={catalogData?.current ? date(catalogData.current.updatedAtMs) : undefined}>
+        {catalogData?.current ? <>{tr("最新已保存扫描", "Latest saved scan")} · <time dateTime={new Date(catalogData.current.updatedAtMs).toISOString()}>{compactDate(catalogData.current.updatedAtMs)}</time></>
+          : catalogError ? tr("最新已保存扫描暂不可用", "Latest saved scan unavailable")
+          : catalogLoading ? tr("正在读取最新已保存扫描…", "Reading latest saved scan…")
+          : tr("尚无已保存扫描", "No saved scan yet")}
+      </span>
       {range && <span className="comparison-range" title={`${date(rangeStart)} → ${date(rangeEnd)}`}>{range}</span>}
     </div>
+    {scanNotice && <div className="comparison-scan-notice" data-testid="growth-scan-notice" role="status">
+      <span>{scanNotice}</span>
+      <Button size="sm" variant="ghost" data-testid="growth-retry-scan" disabled={retryScanDisabled} title={retryScanDisabledReason} onClick={onRetryScan}>{tr("重试扫描", "Retry scan")}</Button>
+    </div>}
     {ready && <dl className="comparison-metrics" aria-label={tr("已比对范围的占用变化", "Allocation changes in compared contents")}>
       <div><dt>{tr("新增占用", "Added usage")}</dt><dd className="comparison-total"><b>+{formatBytes(data.growthBytes)}</b></dd></div>
       <div><dt>{tr("减少占用", "Removed usage")}</dt><dd>−{formatBytes(data.reductionBytes)}</dd></div>

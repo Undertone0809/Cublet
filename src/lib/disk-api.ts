@@ -36,6 +36,7 @@ export type DiskScan = {
   startedAtMs: number;
   updatedAtMs: number;
   usageStale?: boolean;
+  historySaveFailed?: boolean;
   elapsedMs: number;
   scannedFiles: number;
   scannedDirectories: number;
