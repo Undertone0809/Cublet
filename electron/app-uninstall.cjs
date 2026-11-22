@@ -27,6 +27,8 @@ const CHANGED = '项目已发生变化，请重新预览';
 const SHARED = '发现使用同一标识的应用副本，关联数据受保护';
 const SHARED_UNAVAILABLE = '无法确认是否有其他应用副本，关联数据受保护';
 const GROUP_PROTECTED = '应用组容器可能由多个应用使用，成员未核实，数据受保护';
+const APPLICATION_NAME_ONLY = 'application-name-only';
+const NAME_MATCH_OTHER_APP = '目录名称匹配另一个已安装应用的标识';
 const COMMAND_OPTIONS = {
   encoding: 'utf8',
   timeout: 3000,
@@ -225,6 +227,15 @@ function validateRelated(stat, directory) {
   }
 }
 
+function isSelectableRelatedEvidence(item) {
+  return item.evidenceStrength === 'strong' || item.evidence === APPLICATION_NAME_ONLY;
+}
+
+function otherBundleIdForNameMatch(item) {
+  if (item.evidence === APPLICATION_NAME_ONLY && ID_PATTERN.test(item.name)
+    && item.name.toLowerCase() !== item.ownerId.toLowerCase()) return item.name;
+}
+
 function row(target, kind, appPath) {
   return { id: randomUUID(), path: target, name: path.basename(target), kind, bytes: 0, appPath };
 }
@@ -406,7 +417,8 @@ function createAppUninstaller({
 
   async function sharingEvidence(groups, knownIdentifiers = new Map(), verifiedEvidence) {
     const requestedIds = new Set(groups.flatMap(group => [group.app.bundleId,
-      ...group.entries.map(entry => entry.item.ownerId).filter(Boolean)]).map(id => id.toLowerCase()));
+      ...group.entries.flatMap(({ item }) => [item.ownerId, otherBundleIdForNameMatch(item)])])
+      .filter(Boolean).map(id => id.toLowerCase()));
     const copies = new Map([...requestedIds].map(id => [id, new Map(verifiedEvidence?.copies.get(id))]));
     // Only the selected identifiers' live lookup can make absence unavailable.
     // Broad discovery still finds real copies, but its unrelated gaps are diagnostics.
@@ -505,6 +517,12 @@ function createAppUninstaller({
     const otherCopies = copies.get(ownerId.toLowerCase());
     if ([...(otherCopies?.keys() || [])].some(copy => copy !== group.app.identity)) return SHARED;
     return incomplete ? SHARED_UNAVAILABLE : undefined;
+  }
+
+  function relatedSharingReason(group, evidence, item) {
+    const otherId = otherBundleIdForNameMatch(item);
+    if (otherId && sharingReason(group, evidence, otherId) === SHARED) return NAME_MATCH_OTHER_APP;
+    return sharingReason(group, evidence, item.ownerId);
   }
 
   function sharedCopyPaths(group, evidence) {
@@ -657,11 +675,11 @@ function createAppUninstaller({
       try {
         const name = await plistString(path.join(target, 'Contents', 'Info.plist'), key);
         if (typeof name === 'string' && name.length <= 255 && name && !/[\/\u0000-\u001f\u007f]/.test(name)) names.add(name);
-      } catch { /* Optional display names are weak hints, never authorization. */ }
+      } catch { /* Optional display names supplement the bundle filename. */ }
     }
     for (const appName of names) {
       if (appName && appName !== '.' && appName !== '..' && appName !== id) {
-        add({ kind: 'data', path: path.join(home, 'Library', 'Application Support', appName), directory: true }, 'application-name-only', id, 'weak');
+        add({ kind: 'data', path: path.join(home, 'Library', 'Application Support', appName), directory: true }, APPLICATION_NAME_ONLY, id, 'weak');
       }
     }
     validated.stamps.push(...helperStamps);
@@ -689,7 +707,9 @@ function createAppUninstaller({
       const candidate = { ...row(related.path, related.kind, target), evidence: related.evidence,
         evidenceStrength: related.strength, ownerId: related.ownerId, shared: false, protected: false };
       if (validated.bundleId.toLowerCase() === OWN_ID) candidate.blockedReason = '磁盘管家当前使用的关联数据受保护';
-      if (related.strength === 'weak') candidate.blockedReason = related.protectedReason || '仅发现名称或未核实的归属线索，关联数据受保护';
+      if (!isSelectableRelatedEvidence(candidate)) {
+        candidate.blockedReason ||= related.protectedReason || '沙盒容器归属无法核实';
+      }
       try {
         const { stat, fingerprint } = await inspectPath(related.path);
         validateRelated(stat, related.directory);
@@ -725,7 +745,7 @@ function createAppUninstaller({
     await inspectPath(path.dirname(target));
     await confirmAppAbsent(target);
     const eligible = failed.filter(entry => entry.item.kind !== 'app' && entry.stamps
-      && entry.item.evidenceStrength === 'strong' && entry.item.ownerId
+      && isSelectableRelatedEvidence(entry.item) && entry.item.ownerId
       && previous.app.bundleId.toLowerCase() !== OWN_ID);
     if (!eligible.length) throw new Error('没有可恢复的已选关联项目，请重新扫描');
     const item = { ...previous.item, id: randomUUID(), bytes: 0, alreadyRemoved: true, protected: false };
@@ -798,7 +818,7 @@ function createAppUninstaller({
         const relatedBlock = group.item.blockedReason || (withData.includes(group) ? sharingReason(group, sharing) : undefined);
         for (const entry of group.entries.slice(1)) {
           entry.item.blockedReason ||= group.item.blockedReason || (inUse(usage.paths, entry.item.path) ? RUNNING : undefined)
-            || relatedBlock || (sharing && sharingReason(group, sharing, entry.item.ownerId));
+            || relatedBlock || (sharing && relatedSharingReason(group, sharing, entry.item));
           if (entry.item.blockedReason === SHARED) entry.item.copyProtection = 'shared';
           else if (entry.item.blockedReason === SHARED_UNAVAILABLE) entry.item.copyProtection = 'unavailable';
           entry.item.shared = entry.item.blockedReason === SHARED || entry.item.evidence === 'declared-group-container';
@@ -976,7 +996,7 @@ function createAppUninstaller({
             }
             await checkUnused(entry.item.path);
             const evidence = await sharingEvidence([group], knownIdentifiers);
-            const blocked = sharingReason(group, evidence) || sharingReason(group, evidence, entry.item.ownerId);
+            const blocked = sharingReason(group, evidence) || relatedSharingReason(group, evidence, entry.item);
             if (blocked) throw new Error(blocked);
             await confirmAppAbsent(group.item.path);
           });
@@ -984,7 +1004,7 @@ function createAppUninstaller({
       }
       const recoverableRelated = plan.groups.some(group => confirmedApps.has(group.item.path)
         && group.entries.some(entry => entry.item.kind !== 'app' && selected.has(entry.item.id)
-          && entry.stamps && entry.item.evidenceStrength === 'strong' && failures.some(failure => failure.path === entry.item.path)));
+          && entry.stamps && isSelectableRelatedEvidence(entry.item) && failures.some(failure => failure.path === entry.item.path)));
       const result = { mode: plan.mode, movedPaths, movedAppPaths, failures, ...(recoverableRelated ? { recoverableRelated: true } : {}) };
       if (getDisposition) {
         while (completed.size >= MAX_PLANS) completed.delete(completed.keys().next().value);

@@ -339,7 +339,8 @@ try {
   const sharedData = itemFor(dialog, dataPath);
   await sharedData.waitFor();
   assert(await sharedData.getByRole('checkbox').isDisabled(), 'A matching copy must protect shared data');
-  assert.match(await sharedData.innerText(), /same bundle|same identifier|同一标识/i);
+  const sharedNotice = dialog.getByRole('status').filter({ hasText: 'Other copies were found. Shared data will be kept.' });
+  await sharedNotice.getByText(outsideBundle, { exact: true }).waitFor();
   await closeDialog(dialog, 'Cancel');
   await access(outsideBundle);
   await rm(backups, { recursive: true });
